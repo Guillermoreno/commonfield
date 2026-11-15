@@ -27,8 +27,7 @@ jobs:
           node-version: 22.22.0
       - name: Install
         run: |
-          corepack enable
-          corepack prepare pnpm@12.18.0 --activate
+          npm install --global --ignore-scripts pnpm@12.18.0
           pnpm install --frozen-lockfile
       - name: Trusted worker regression suite
         run: python3 -m unittest discover -s tools/pr_gate -v
