@@ -1,0 +1,11 @@
+BEGIN;
+ALTER TABLE operation_receipts ADD COLUMN IF NOT EXISTS operation_kind text;
+UPDATE operation_receipts SET operation_kind='legacy' WHERE operation_kind IS NULL;
+ALTER TABLE operation_receipts ALTER COLUMN operation_kind SET NOT NULL;
+ALTER TABLE operation_receipts ALTER COLUMN operation_kind SET DEFAULT 'legacy';
+ALTER TABLE operation_receipts DROP CONSTRAINT IF EXISTS operation_receipts_kind;
+ALTER TABLE operation_receipts ADD CONSTRAINT operation_receipts_kind CHECK (operation_kind IN ('legacy','create','text','position','color'));
+UPDATE stickies SET x=LEAST(1000000,GREATEST(-1000000,round(x::numeric*4)/4)), y=LEAST(1000000,GREATEST(-1000000,round(y::numeric*4)/4));
+ALTER TABLE stickies DROP CONSTRAINT IF EXISTS stickies_finite_position;
+ALTER TABLE stickies ADD CONSTRAINT stickies_finite_position CHECK (x BETWEEN -1000000 AND 1000000 AND y BETWEEN -1000000 AND 1000000 AND x*4=trunc(x*4) AND y*4=trunc(y*4));
+COMMIT;

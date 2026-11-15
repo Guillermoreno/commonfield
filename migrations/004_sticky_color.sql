@@ -1,0 +1,11 @@
+BEGIN;
+ALTER TABLE stickies ADD COLUMN IF NOT EXISTS color text NOT NULL DEFAULT 'yellow';
+ALTER TABLE stickies DROP CONSTRAINT IF EXISTS stickies_color;
+ALTER TABLE stickies ADD CONSTRAINT stickies_color CHECK (color IN ('yellow','pink','blue','green','orange','purple'));
+ALTER TABLE operation_receipts ADD COLUMN IF NOT EXISTS committed_color text;
+UPDATE operation_receipts SET committed_color='yellow' WHERE committed_color IS NULL;
+ALTER TABLE operation_receipts ALTER COLUMN committed_color SET DEFAULT 'yellow';
+ALTER TABLE operation_receipts ALTER COLUMN committed_color SET NOT NULL;
+ALTER TABLE operation_receipts DROP CONSTRAINT IF EXISTS operation_receipts_kind;
+ALTER TABLE operation_receipts ADD CONSTRAINT operation_receipts_kind CHECK (operation_kind IN ('legacy','create','text','position','color'));
+COMMIT;

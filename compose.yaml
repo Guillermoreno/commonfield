@@ -1,0 +1,79 @@
+services:
+  setup:
+    profiles: [tools]
+    image: node:22.22.0-bookworm-slim
+    working_dir: /setup
+    command: [node, setup.mjs]
+    volumes:
+      - ./docker:/setup:ro
+      - ./.commonfield:/state
+    network_mode: none
+  postgres:
+    image: postgres:17.6-bookworm
+    environment:
+      POSTGRES_DB: commonfield
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/admin_password
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    secrets: [admin_password, app_password, writer_password, migration_password]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/001-roles.sql:ro
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U postgres -d commonfield"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  migrate:
+    build: .
+    image: commonfield:local
+    command: [node, docker/migrate.mjs]
+    secrets: [migration_password]
+    depends_on:
+      postgres: {condition: service_healthy}
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+  app:
+    build: .
+    image: commonfield:local
+    environment:
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
+    secrets: [app_password, writer_password, invitation_key]
+    ports:
+      - "127.0.0.1:${APP_PORT:-8080}:4173"
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      mailpit: {condition: service_started}
+    healthcheck:
+      test: [CMD, node, docker/health.mjs]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+  mailpit:
+    image: axllent/mailpit:v1.27.8
+    environment:
+      MP_DATABASE: /data/mailpit.db
+      MP_MAX_MESSAGES: 500
+    ports:
+      - "127.0.0.1:${MAILPIT_PORT:-8025}:8025"
+    volumes: [mailpit_data:/data]
+    restart: unless-stopped
+volumes:
+  postgres_data:
+  mailpit_data:
+secrets:
+  admin_password: {file: ./.commonfield/admin_password}
+  app_password: {file: ./.commonfield/app_password}
+  writer_password: {file: ./.commonfield/writer_password}
+  migration_password: {file: ./.commonfield/migration_password}
+  invitation_key: {file: ./.commonfield/invitation_key}

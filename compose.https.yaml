@@ -1,0 +1,20 @@
+services:
+  caddy:
+    image: caddy:2.10.2-alpine
+    environment:
+      COMMONFIELD_HOST: ${COMMONFIELD_HOST:?Set COMMONFIELD_HOST to your DNS hostname}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL}
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app: {condition: service_healthy}
+    restart: unless-stopped
+  app:
+    environment:
+      PUBLIC_ORIGIN: https://${COMMONFIELD_HOST:?Set COMMONFIELD_HOST}
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,10 @@
+BEGIN;
+ALTER TABLE stickies DROP CONSTRAINT IF EXISTS stickies_board_id_key;
+ALTER TABLE stickies ADD COLUMN IF NOT EXISTS x double precision NOT NULL DEFAULT 0;
+ALTER TABLE stickies ADD COLUMN IF NOT EXISTS y double precision NOT NULL DEFAULT 0;
+ALTER TABLE stickies DROP CONSTRAINT IF EXISTS stickies_finite_position;
+ALTER TABLE stickies ADD CONSTRAINT stickies_finite_position CHECK (x = x AND y = y AND abs(x) < 1000000000 AND abs(y) < 1000000000);
+CREATE INDEX IF NOT EXISTS stickies_board_position ON stickies(board_id, id);
+ALTER TABLE operation_receipts ADD COLUMN IF NOT EXISTS committed_x double precision;
+ALTER TABLE operation_receipts ADD COLUMN IF NOT EXISTS committed_y double precision;
+COMMIT;

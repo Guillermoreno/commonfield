@@ -1,0 +1,6 @@
+{
+  email {$ACME_EMAIL}
+}
+{$COMMONFIELD_HOST} {
+  reverse_proxy app:4173
+}

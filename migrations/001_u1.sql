@@ -1,0 +1,16 @@
+BEGIN;
+CREATE TABLE IF NOT EXISTS writer_epoch (singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton), generation bigint NOT NULL CHECK(generation >= 0));
+INSERT INTO writer_epoch(singleton,generation) VALUES(true,0) ON CONFLICT DO NOTHING;
+CREATE TABLE IF NOT EXISTS bootstrap_state (singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton), completed_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS users (id uuid PRIMARY KEY, email text NOT NULL UNIQUE CHECK(email=lower(email)), display_name text NOT NULL, password_hash text NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS teams (id uuid PRIMARY KEY, name text NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS memberships (id uuid PRIMARY KEY, team_id uuid NOT NULL REFERENCES teams ON DELETE CASCADE, user_id uuid NOT NULL REFERENCES users ON DELETE CASCADE, role text NOT NULL CHECK(role IN ('administrator','member')), status text NOT NULL DEFAULT 'active' CHECK(status IN ('active','revoked')), revoked_at timestamptz, UNIQUE(team_id,user_id));
+CREATE TABLE IF NOT EXISTS invitations (id uuid PRIMARY KEY, team_id uuid NOT NULL REFERENCES teams ON DELETE CASCADE, email text NOT NULL CHECK(email=lower(email)), role text NOT NULL CHECK(role IN ('administrator','member')), token_digest bytea NOT NULL UNIQUE, status text NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','revoked','expired')), expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), accepted_at timestamptz, revoked_at timestamptz);
+CREATE UNIQUE INDEX IF NOT EXISTS invitations_one_pending ON invitations(team_id,email) WHERE status='pending';
+CREATE TABLE IF NOT EXISTS sessions (id_digest bytea PRIMARY KEY, user_id uuid NOT NULL REFERENCES users ON DELETE CASCADE, csrf_digest bytea NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), last_seen_at timestamptz NOT NULL DEFAULT now(), absolute_expires_at timestamptz NOT NULL, idle_expires_at timestamptz NOT NULL, revoked_at timestamptz);
+CREATE TABLE IF NOT EXISTS boards (id uuid PRIMARY KEY, team_id uuid NOT NULL REFERENCES teams ON DELETE CASCADE, name text NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS stickies (id uuid PRIMARY KEY, board_id uuid NOT NULL UNIQUE REFERENCES boards ON DELETE CASCADE, text text NOT NULL, version bigint NOT NULL CHECK(version > 0), updated_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS operation_receipts (operation_id uuid PRIMARY KEY, actor_id uuid NOT NULL REFERENCES users, team_id uuid NOT NULL REFERENCES teams, board_id uuid NOT NULL REFERENCES boards, sticky_id uuid NOT NULL, request_digest bytea NOT NULL, committed_version bigint NOT NULL, committed_text text NOT NULL, committed_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX IF NOT EXISTS memberships_authorization ON memberships(user_id,team_id,status);
+CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(user_id,absolute_expires_at,idle_expires_at) WHERE revoked_at IS NULL;
+COMMIT;
