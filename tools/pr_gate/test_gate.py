@@ -97,10 +97,15 @@ class GateTests(unittest.TestCase):
 
     def test_sandbox_command_does_not_mount_home_or_candidate_config(self):
         self.need()
-        cmd = g.sandbox('sha256:'+'a'*64, '/safe/source', '/safe/config', '/safe/output')
+        from unittest.mock import patch
+        with patch.object(g.os, 'getuid', return_value=1001), patch.object(g.os, 'getgid', return_value=1001):
+            cmd = g.sandbox('sha256:'+'a'*64, '/safe/source', '/safe/config', '/safe/output')
         self.assertIn('--read-only', cmd)
         self.assertIn('--cap-drop=ALL', cmd)
-        self.assertIn('--user=1000:1000', cmd)
+        self.assertIn('--user=1001:1001', cmd)
+        self.assertIn('--tmpfs=/tmp:rw,exec,nosuid,size=1g,uid=1001,gid=1001', cmd)
+        with patch.object(g.os, 'getuid', return_value=0), self.assertRaises(g.Reject):
+            g.sandbox('sha256:'+'a'*64, '/safe/source', '/safe/config', '/safe/output')
         self.assertNotIn('/var/run/docker.sock', ' '.join(cmd))
         self.assertNotIn('SONAR_TOKEN=', ' '.join(cmd))
         with self.assertRaises(g.Reject):

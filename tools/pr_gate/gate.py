@@ -264,9 +264,12 @@ def publish(read_pr, post, state, sha, status, description, url):
 def sandbox(image, source, config, output):
     if not re.fullmatch(r'sha256:[0-9a-f]{64}', image):
         raise Reject('scanner_image_not_immutable')
-    return ['docker', 'run', '--rm', '--read-only', '--user=1000:1000', '--cap-drop=ALL',
+    uid, gid = os.getuid(), os.getgid()
+    if uid == 0 or gid == 0:
+        raise Reject('scanner_operator_must_be_nonroot')
+    return ['docker', 'run', '--rm', '--read-only', '--user='+str(uid)+':'+str(gid), '--cap-drop=ALL',
             '--security-opt=no-new-privileges', '--pids-limit=256', '--memory=4g', '--cpus=2',
-            '--network=host', '--tmpfs=/tmp:rw,exec,nosuid,size=1g,uid=1000,gid=1000',
+            '--network=host', '--tmpfs=/tmp:rw,exec,nosuid,size=1g,uid='+str(uid)+',gid='+str(gid),
             '--mount=type=bind,src='+source+',dst=/candidate,readonly',
             '--mount=type=bind,src='+config+',dst=/config,readonly',
             '--mount=type=bind,src='+output+',dst=/output', image,

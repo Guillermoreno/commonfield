@@ -6,7 +6,7 @@ This is a recipe, not an installer. Keep all private configuration, SSH aliases,
 2. Build the scanner from **only** the reviewed `tools/pr_gate` directory:
    `docker build -t commonfield-pr-scanner:review tools/pr_gate`.
    Inspect `docker inspect commonfield-pr-scanner:review --format '{{.Id}} {{.Architecture}} {{.Config.User}}'`.
-   Use the exact local `sha256:...` image ID in configuration, never the mutable tag. Base Node is digest-pinned; npm package is fixed at 5.1.0. Debian packages and transitive npm resolutions are build-time inputs, so review/freeze each resulting image ID rather than claiming reproducible transitive resolution. Supported ARM JRE/engine provisioning is performed by the trusted scanner against the existing server.
+   Use the exact local `sha256:...` image ID in configuration, never the mutable tag. The runtime scanner uses the nonroot operator UID/GID so its output remains removable by the worker; running the worker as root or with primary GID zero is rejected. Base Node is digest-pinned; npm package is fixed at 5.1.0. Debian packages and transitive npm resolutions are build-time inputs, so review/freeze each resulting image ID rather than claiming reproducible transitive resolution. Supported ARM JRE/engine provisioning is performed by the trusted scanner against the existing server.
 3. Copy reviewed `gate.py` into a private operator-owned versioned directory outside all candidate/deployment trees. Copy the reviewed `.github/workflows/pr-quality.yml` alongside it as `pr-quality.yml`. Do not automatically update either from PR source. Record SHA-256 of both files with `sha256sum`. The JSON configuration must explicitly contain:
 
    ```json
