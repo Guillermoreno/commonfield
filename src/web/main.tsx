@@ -10,6 +10,7 @@ import {
 } from "../access-control/invitation-url.js";
 import {
   TeamAccessPanel,
+  invitationDeliveryLabel,
   type InvitationRow,
   type MemberRow,
 } from "./team-access-panel.js";
@@ -47,6 +48,7 @@ type InvitationDto = {
     | "unsent"
     | Exclude<InvitationRow["delivery"], "not_requested">;
   invitationUrl?: string;
+  deliveryTransport?: "local_capture" | "smtp" | null;
 };
 const invitationRow = (value: InvitationDto): InvitationRow => ({
   id: value.invitationId,
@@ -56,6 +58,7 @@ const invitationRow = (value: InvitationDto): InvitationRow => ({
   delivery:
     value.deliveryStatus === "unsent" ? "not_requested" : value.deliveryStatus,
   url: value.invitationUrl ?? "",
+  transport: value.deliveryTransport ?? null,
 });
 const invitationLabel = (value: string) =>
   value === "not_requested"
@@ -203,6 +206,7 @@ function App() {
     "member",
   );
   const [deliveryAvailable, setDeliveryAvailable] = useState(false);
+  const [deliveryTransport, setDeliveryTransport] = useState<"local_capture" | "smtp">("local_capture");
   const [inviteOpen, setInviteOpen] = useState(false);
   const [managementOpen, setManagementOpen] = useState(false);
   const [members, setMembers] = useState<MemberRow[]>([]);
@@ -369,6 +373,7 @@ function App() {
         setMembers(body.members ?? []);
         setInvitations((body.invitations ?? []).map(invitationRow));
         setDeliveryAvailable(body.deliveryAvailable === true);
+        setDeliveryTransport(body.deliveryTransport === "smtp" ? "smtp" : "local_capture");
         setMode("board");
         setStatus("Session restored");
         await load(body.boardId);
@@ -434,6 +439,7 @@ function App() {
     setMembers(current.members ?? []);
     setInvitations((current.invitations ?? []).map(invitationRow));
     setDeliveryAvailable(current.deliveryAvailable === true);
+    setDeliveryTransport(current.deliveryTransport === "smtp" ? "smtp" : "local_capture");
     setMode("board");
     setStatus("Signed in");
     await load(current.boardId ?? body.boardId);
@@ -486,6 +492,7 @@ function App() {
         row.id === id
           ? {
               ...row,
+              transport: body.deliveryTransport ?? null,
               delivery:
                 body.deliveryStatus === "unsent"
                   ? "not_requested"
@@ -553,6 +560,7 @@ function App() {
     setMembers(current.members ?? []);
     setInvitations((current.invitations ?? []).map(invitationRow));
     setDeliveryAvailable(current.deliveryAvailable === true);
+    setDeliveryTransport(current.deliveryTransport === "smtp" ? "smtp" : "local_capture");
     setMode("board");
     setStatus("Invitation accepted");
     await load(current.boardId);
@@ -1834,7 +1842,7 @@ function App() {
                             Copy
                           </button>
                           <small>
-                            {invitationLabel(row.delivery)} ·{" "}
+                            {invitationDeliveryLabel(row)} ·{" "}
                             {invitationLabel(row.lifecycle)}
                           </small>
                         </article>
@@ -1896,6 +1904,7 @@ function App() {
                   members={members}
                   invitations={invitations}
                   deliveryAvailable={deliveryAvailable}
+                  deliveryTransport={deliveryTransport}
                   deliveryUnavailableReason="Local invitation delivery is unavailable"
                   onCopy={(url) => void navigator.clipboard.writeText(url)}
                   onSend={sendInvitation}

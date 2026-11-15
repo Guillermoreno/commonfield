@@ -15,7 +15,7 @@ docker compose up -d --build --wait
 
 Open **http://localhost:8080/bootstrap** and create **your own** name, email, team and password. There is no shipped administrator account. Bootstrap is transactional and available once per database. Use the same hostname as the configured origin, not an alternate IP. Sign in after creating the workspace.
 
-The app listens on loopback only. PostgreSQL and SMTP have **no published ports**. The capture inbox at **http://localhost:8025** is also loopback-only. Invitation “Sent” means accepted by the **local capture inbox**, not delivered to anyone's real email account. Share invitation links privately yourself. No outbound email integration is included.
+The app listens on loopback only. PostgreSQL and internal SMTP have **no published ports**. The capture inbox at **http://localhost:8025** is also loopback-only. Default `EMAIL_MODE=capture` captures invitations locally; it does **not** email recipients. For real delivery, explicitly enable the [authenticated TLS SMTP override](docs/smtp.md) with private credential files and a verified provider sender. “SMTP accepted” means transport acceptance, never confirmed inbox delivery. No real provider or recipient receipt is claimed by this release.
 
 ```sh
 docker compose ps
@@ -34,6 +34,6 @@ For different ports, copy `.env.example` to `.env`, update **both** `APP_PORT` a
 
 ## Architecture and scope
 
-One non-root combined TypeScript/React backend/frontend service, one PostgreSQL instance, one local Mailpit capture service. A separate short-lived migration service runs before application startup. Writer authority uses PostgreSQL advisory ownership and generation/nonce fencing; readiness includes live database access and writer ownership. **Run one application replica only.** No proprietary agent framework, external identity registry or paid runtime is required.
+One non-root combined TypeScript/React backend/frontend service, one PostgreSQL instance, one private Mailpit capture service (default), and optional outbound Nodemailer SMTP delivery. A separate short-lived migration service runs before application startup. Writer authority uses PostgreSQL advisory ownership and generation/nonce fencing; readiness includes live database access and writer ownership. **Run one application replica only.** No proprietary agent framework, external identity registry or paid runtime is required.
 
 Dependencies are pinned in `pnpm-lock.yaml`; the Docker build verifies pnpm 12.18.0 and runs the included tests, TypeScript checks and frontend/backend compilation. Node.js 22.22.0 is used in the image. The implementation remains an early team-board release: shipping this package is not a claim of full product acceptance, production security certification or measured capacity for twenty concurrent users.

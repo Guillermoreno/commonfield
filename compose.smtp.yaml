@@ -1,0 +1,20 @@
+# Opt in explicitly: docker compose -f compose.yaml -f compose.smtp.yaml ...
+# Never put SMTP passwords in .env or command arguments.
+services:
+  app:
+    environment:
+      EMAIL_MODE: smtp
+      SMTP_HOST: ${SMTP_HOST:?Set SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT:?Set SMTP_PORT}
+      SMTP_TLS: ${SMTP_TLS:?Set SMTP_TLS to starttls or implicit}
+      SMTP_USERNAME_FILE: /run/secrets/smtp_username
+      SMTP_PASSWORD_FILE: /run/secrets/smtp_password
+      SMTP_FROM: ${SMTP_FROM:?Set verified SMTP_FROM address}
+      # Optional PEM CA file for private providers; verification stays mandatory.
+      SMTP_CA_FILE: ${SMTP_CA_FILE:-}
+    secrets: [smtp_username, smtp_password]
+secrets:
+  smtp_username:
+    file: ./.commonfield/smtp_username
+  smtp_password:
+    file: ./.commonfield/smtp_password

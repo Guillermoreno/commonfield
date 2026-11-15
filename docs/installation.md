@@ -40,6 +40,6 @@ Use the same pair of Compose files on every subsequent server operation. `COMMON
 
 The app's loopback HTTP port remains available to local operators in HTTPS mode; mutation requests from that HTTP browser origin are refused after switching to HTTPS. Do not change the bind to 0.0.0.0. Do not start an unclaimed server behind an already-live public reverse proxy.
 
-## Invitation capture
+## Invitation delivery
 
-Mailpit is the only implemented SMTP target and cannot be changed to a real SMTP host through configuration. No SMTP port is published. Capture message state is persisted and the capture web UI is localhost-only; messages contain sensitive invitation links. UI delivery labels inherited from the app refer to SMTP acceptance, **not external inbox delivery**. The interface is not evidence of outbound email capability.
+Mailpit is the default `capture` transport. No internal SMTP port is published. Capture message state is persisted and its web UI is localhost-only; messages contain sensitive invitation links. To enable real outbound email, follow [SMTP setup](smtp.md): opt into `compose.smtp.yaml`, provision private username/password files, select required STARTTLS or implicit TLS, and verify your provider sender/domain. Invalid SMTP configuration fails startup without fallback. UI status distinguishes local capture from SMTP acceptance; neither implies external inbox delivery.

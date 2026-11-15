@@ -3,42 +3,92 @@ import { createApp } from "./app.js";
 import { PostgresWriterAuthority } from "../writer-authority/postgres-writer-authority.js";
 import { readinessResponse } from "./runtime-config.js";
 import { StructuredLogger } from "../shared/structured-logger.js";
-import { deliverToLocalCapture } from "../access-control/local-smtp.js";
+import {
+  loadEmailConfig,
+  createInvitationDelivery,
+} from "../access-control/email-delivery.js";
+import { recoverInvitationDeliveries } from "../access-control/delivery-recovery.js";
 import { readFile } from "node:fs/promises";
 import { isAllowedPublicOrigin } from "./public-origin.js";
 const publicOrigin = process.env.PUBLIC_ORIGIN ?? "http://localhost:8080";
-if (!isAllowedPublicOrigin(publicOrigin)) throw new Error("configuration_invalid:PUBLIC_ORIGIN");
+if (!isAllowedPublicOrigin(publicOrigin))
+  throw new Error("configuration_invalid:PUBLIC_ORIGIN");
 const host = "0.0.0.0";
 const port = 4173;
-const secret = async (name: string) => (await readFile(`/run/secrets/${name}`, "utf8")).trim();
+const emailConfig = await loadEmailConfig(process.env);
+const emailDelivery = createInvitationDelivery(emailConfig);
+const secret = async (name: string) =>
+  (await readFile(`/run/secrets/${name}`, "utf8")).trim();
 const connect = async (role: string, passwordFile: string) => {
-  const pool = new Pool({host: "postgres", database: "commonfield", user: role, password: await secret(passwordFile)});
-  const result = await pool.query("SELECT current_user,rolsuper,rolcreatedb,rolcreaterole,rolbypassrls FROM pg_roles WHERE rolname=current_user");
+  const pool = new Pool({
+    host: "postgres",
+    database: "commonfield",
+    user: role,
+    password: await secret(passwordFile),
+  });
+  const result = await pool.query(
+    "SELECT current_user,rolsuper,rolcreatedb,rolcreaterole,rolbypassrls FROM pg_roles WHERE rolname=current_user",
+  );
   const row = result.rows[0];
-  if (!row || row.current_user !== role || row.rolsuper || row.rolcreatedb || row.rolcreaterole || row.rolbypassrls)
+  if (
+    !row ||
+    row.current_user !== role ||
+    row.rolsuper ||
+    row.rolcreatedb ||
+    row.rolcreaterole ||
+    row.rolbypassrls
+  )
     throw new Error("database_role_not_least_privilege");
   return pool;
 };
 const pool = await connect("commonfield_app", "app_password");
 const writerPool = await connect("commonfield_writer", "writer_password");
 const invitationEnvelopeKey = await secret("invitation_key");
-if (!/^[a-f0-9]{64}$/.test(invitationEnvelopeKey)) throw new Error("invitation_key_invalid");
+if (!/^[a-f0-9]{64}$/.test(invitationEnvelopeKey))
+  throw new Error("invitation_key_invalid");
 let lossListener: (() => void) | undefined;
 let shuttingDown = false;
 let recovering = false;
 let ownershipWasLost = false;
+let recoveredPermit: { generation: bigint; nonce: string } | null = null;
+const hasPermit = (generation: bigint | null, nonce: string | null) =>
+  generation !== null &&
+  nonce !== null &&
+  authority.generation() === generation &&
+  authority.nonce() === nonce;
+const isAuthorityReady = () =>
+  !shuttingDown &&
+  recoveredPermit !== null &&
+  hasPermit(recoveredPermit.generation, recoveredPermit.nonce);
 const logger = new StructuredLogger();
 const recoverAuthority = async () => {
   if (recovering || shuttingDown) return;
   recovering = true;
   try {
-    while (!shuttingDown && authority.generation() === null) {
+    while (!shuttingDown && !isAuthorityReady()) {
+      let generation: bigint | null = null;
+      let nonce: string | null = null;
       try {
-        if (await authority.acquire(1000)) break;
+        if (
+          authority.generation() !== null ||
+          (await authority.acquire(1000))
+        ) {
+          generation = authority.generation();
+          nonce = authority.nonce();
+          await recoverInvitationDeliveries(pool, generation, nonce);
+          // Recovery may commit after the lock connection dies, before a new
+          // epoch is written. Only the exact still-owned permit can be exposed.
+          if (!shuttingDown && hasPermit(generation, nonce)) {
+            recoveredPermit = { generation: generation!, nonce: nonce! };
+            break;
+          }
+        }
       } catch {
-        // PostgreSQL may still be unavailable; readiness remains terminally false.
+        // A failed old recovery must not close a replacement owner's epoch.
+        if (hasPermit(generation, nonce)) await authority.close();
       }
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (!shuttingDown)
+        await new Promise((resolve) => setTimeout(resolve, 250));
     }
   } finally {
     recovering = false;
@@ -48,6 +98,7 @@ const authority = new PostgresWriterAuthority(writerPool, {
   lockKey: 741921,
   probeMs: 1000,
   onLoss: () => {
+    recoveredPermit = null;
     ownershipWasLost = true;
     logger.event("ownership.transition", { result: "lost" });
     lossListener?.();
@@ -56,11 +107,13 @@ const authority = new PostgresWriterAuthority(writerPool, {
 });
 if (!(await authority.acquire(10_000)))
   throw new Error("writer_ownership_unavailable");
+await recoverAuthority();
 const app = createApp(pool, {
   webRoot: `${process.cwd()}/dist/web`,
-  isWriterReady: () => authority.generation() !== null,
-  writerGeneration: () => authority.generation(),
-  writerNonce: () => authority.nonce(),
+  isWriterReady: isAuthorityReady,
+  writerGeneration: () =>
+    isAuthorityReady() ? recoveredPermit!.generation : null,
+  writerNonce: () => (isAuthorityReady() ? recoveredPermit!.nonce : null),
   onAuthorityLoss: (listener) => {
     lossListener = listener;
   },
@@ -76,7 +129,7 @@ const app = createApp(pool, {
     }
     const generation = authority.generation();
     let ownership: "ready" | "lost" | "unavailable" = "unavailable";
-    if (generation !== null) ownership = "ready";
+    if (isAuthorityReady()) ownership = "ready";
     else if (ownershipWasLost) ownership = "lost";
     return readinessResponse({
       configurationValid: true,
@@ -89,8 +142,8 @@ const app = createApp(pool, {
   publicOrigin,
   secureCookies: publicOrigin.startsWith("https://"),
   invitationEnvelopeKey,
-  deliverInvitation: (message) =>
-    deliverToLocalCapture(message, { host: "mailpit", port: 1025 }),
+  deliveryTransport: emailDelivery.transport,
+  deliverInvitation: (message) => emailDelivery.send(message),
 });
 const close = async () => {
   shuttingDown = true;

@@ -1,0 +1,5 @@
+# Disposable QA mode-switch only; append after compose.smtp-qa.yaml.
+services:
+  app:
+    environment:
+      EMAIL_MODE: capture

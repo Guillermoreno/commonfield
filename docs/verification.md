@@ -1,6 +1,6 @@
-# Installation verification
+# Initial installation baseline verification (before SMTP extension)
 
-This initial Docker package was exercised on a Linux x86-64 host with Docker Engine 29.1.3 and Docker Compose 2.37.1. The clean installation was materialized from the exact staged publication files, without development dependencies, existing configuration or runtime credentials copied into it. Setup generated its own credentials; tests ran in disposable Compose projects, not an existing user installation.
+This initial Docker package was exercised on a Linux ARM64/aarch64 host with Docker Engine 29.1.3 and Docker Compose 2.37.1. The clean installation was materialized from the exact staged publication files, without development dependencies, existing configuration or runtime credentials copied into it. Setup generated its own credentials; tests ran in disposable Compose projects, not an existing user installation.
 
 ## Executed checks
 
@@ -19,6 +19,6 @@ This initial Docker package was exercised on a Linux x86-64 host with Docker Eng
 
 ## Limits
 
-These are installation and targeted functional checks, not comprehensive product acceptance or production-security certification. The two-browser run used two sessions for one account; it is not a twenty-user or cross-team-capacity test. Windows/WSL2, macOS, ARM hardware, public DNS/ACME issuance, every accessibility state, full failure recovery and outbound SMTP were not certified by this run. Invitation email remains local capture only. Review the operational limitations before hosting real data.
+These are installation and targeted functional checks, not comprehensive product acceptance or production-security certification. The two-browser run used two sessions for one account; it is not a twenty-user or cross-team-capacity test. Windows/WSL2, macOS, x86-64 hardware, public DNS/ACME issuance, every accessibility state, full failure recovery and outbound SMTP were not certified by this run. That initial baseline used local capture only. The later SMTP extension has a [separate verification scope](smtp-verification.md); do not read these historical results as provider-delivery certification. Review the operational limitations before hosting real data.
 
 For repeatable installation and proxy smoke commands, see [testing.md](testing.md). For private bootstrap, see [installation.md](installation.md); for coordinated backups and recovery, see [operations.md](operations.md).

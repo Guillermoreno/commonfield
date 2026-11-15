@@ -10,6 +10,38 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TeamAccessPanel } from "../../../src/web/team-access-panel.js";
 
+it("distinguishes capture and SMTP history without relabeling unknown attempts", () => {
+  render(
+    <TeamAccessPanel
+      members={[]}
+      invitations={[
+        {
+          ...invitations[0]!,
+          id: "capture",
+          delivery: "sent",
+          transport: "local_capture",
+        },
+        { ...invitations[0]!, id: "smtp", delivery: "sent", transport: "smtp" },
+        { ...invitations[0]!, id: "unknown", delivery: "sent" },
+      ]}
+      deliveryTransport="smtp"
+      onSend={vi.fn()}
+      onCopy={vi.fn()}
+      onRevoke={vi.fn()}
+    />,
+  );
+  expect(screen.getByText("Captured locally (not emailed)")).toBeTruthy();
+  expect(screen.getByText("SMTP accepted (not inbox confirmed)")).toBeTruthy();
+  expect(
+    screen.getByText("Transport accepted (historical transport unknown)"),
+  ).toBeTruthy();
+  expect(
+    screen.getByText(
+      "SMTP delivery enabled; acceptance does not confirm inbox delivery.",
+    ),
+  ).toBeTruthy();
+});
+
 afterEach(() => cleanup());
 
 const members = [

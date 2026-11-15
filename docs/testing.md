@@ -1,8 +1,10 @@
 # Tests and release boundary
 
-The Docker build installs the unchanged pinned dependency lockfile, verifies the pnpm distribution checksum, runs `pnpm test`, `pnpm run typecheck`, and compiles both backend and frontend. No host JavaScript tooling is needed. `docker build --target build .` reruns the build stage checks when inputs change.
+The Docker build installs the pinned dependency lockfile (including Nodemailer and local-only SMTP test dependencies), verifies the pnpm distribution checksum, runs `pnpm test`, `pnpm run typecheck`, and compiles both backend and frontend. No host JavaScript tooling is needed. `docker build --target build .` reruns the build stage checks when inputs change.
 
 Included tests cover core policies, invitation lifecycle and composition, sticky mutation ledger, generation delivery, session deadlines, bootstrap ownership, React board/access UI and portable deployment contracts. Tests needing private review registries, privileged test-database enrollment, machine-specific attestation, immutable historical evidence, external design snapshots and the old operational harness are deliberately excluded; they are not portable tests and their old results are not attributed to this release. The separate portable entrypoint reuses the actual application and PostgreSQL writer authority, rather than weakening that original protected harness.
+
+For authenticated TLS SMTP fixture tests, startup rejection, restart recovery and capture/SMTP mode-switch checks, use the separate [SMTP verification instructions](smtp-verification.md). They require no live credentials or external recipients; `openssl` and SMTP test dependencies are available only in the build/fixture stages, not the production runtime.
 
 ## Disposable fresh-install smoke
 

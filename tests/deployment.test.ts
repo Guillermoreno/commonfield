@@ -14,7 +14,7 @@ describe('portable deployment contract',()=>{
     for(const origin of ['http://board.example.com','https://board.example.com/','https://board.example.com/path','https://user@board.example.com','https://board.example.com?x=1','null','*']) expect(isAllowedPublicOrigin(origin)).toBe(false);
   });
   it('ships all ordered migrations and commits checksums with schema changes',()=>{
-    expect(readdirSync('migrations').filter(n=>n.endsWith('.sql')).sort().map(n=>n.slice(0,3))).toEqual(['001','002','003','004','005','006','007','008']);
+    expect(readdirSync('migrations').filter(n=>n.endsWith('.sql')).sort().map(n=>n.slice(0,3))).toEqual(['001','002','003','004','005','006','007','008','009']);
     const runner=read('docker/migrate.mjs');
     expect(runner).toContain('migration_checksum_mismatch');
     expect(runner).toContain('pg_advisory_lock');

@@ -1,0 +1,35 @@
+# Disposable QA ONLY. Always use the unique project name commonfield-smtp-qa.
+# Supply a fresh private COMMONFIELD_QA_DIR; never reuse an installation's state.
+services:
+  setup:
+    volumes:
+      - ${COMMONFIELD_QA_DIR:?Set fresh QA directory}:/state
+  app:
+    image: commonfield:smtp-qa
+    environment:
+      SMTP_CA_FILE: /run/secrets/smtp_ca
+      COMMONFIELD_SMTP_QA: "1"
+    secrets: [smtp_ca]
+    volumes:
+      - ./docker:/app/docker:ro
+  migrate:
+    image: commonfield:smtp-qa
+  smtp-fixture:
+    image: commonfield:smtp-fixture-qa
+    volumes:
+      - ${COMMONFIELD_QA_DIR:?Set fresh QA directory}:/fixture:ro
+      - ./docker:/app/docker:ro
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:1080/messages').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+secrets:
+  admin_password: {file: "${COMMONFIELD_QA_DIR}/admin_password"}
+  app_password: {file: "${COMMONFIELD_QA_DIR}/app_password"}
+  writer_password: {file: "${COMMONFIELD_QA_DIR}/writer_password"}
+  migration_password: {file: "${COMMONFIELD_QA_DIR}/migration_password"}
+  invitation_key: {file: "${COMMONFIELD_QA_DIR}/invitation_key"}
+  smtp_username: {file: "${COMMONFIELD_QA_DIR}/smtp_username"}
+  smtp_password: {file: "${COMMONFIELD_QA_DIR}/smtp_password"}
+  smtp_ca: {file: "${COMMONFIELD_QA_DIR}/cert.pem"}

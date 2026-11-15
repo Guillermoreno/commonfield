@@ -190,7 +190,9 @@ export function createApp(
     webRoot?: string;
     publicOrigin?: string;
     invitationEnvelopeKey?: string | Buffer;
+    deliveryTransport?: "local_capture" | "smtp";
     deliverInvitation?: (input: {
+      messageId: string;
       to: string;
       subject: string;
       text: string;
@@ -203,12 +205,12 @@ export function createApp(
     options.generateSecret ?? (() => randomBytes(32).toString("base64url"));
   const secretRetryAttempts = options.secretRetryAttempts ?? 4;
   const publicOrigin = options.publicOrigin ?? "http://127.0.0.1:4412";
-  const beginAuthorityTransaction = async (client: PoolClient) => {
+  const beginAuthorityTransaction = async (client: PoolClient, permit?: {generation:bigint|null|undefined;nonce:string|null|undefined}) => {
     await client.query("BEGIN");
     const fenced = await lockWriterGeneration(
       client,
-      options.writerGeneration?.(),
-      options.writerNonce?.(),
+      permit ? permit.generation : options.writerGeneration?.(),
+      permit ? permit.nonce : options.writerNonce?.(),
     );
     if (!fenced) await client.query("ROLLBACK");
     return fenced;
@@ -228,6 +230,7 @@ export function createApp(
       | "failed"
       | "uncertain";
     delivery_attempts?: number;
+    delivery_transport?: "local_capture" | "smtp" | null;
   };
   const invitationContext = (
     row: InvitationRecord,
@@ -268,6 +271,7 @@ export function createApp(
     }
     return {
       invitationId: row.id,
+      deliveryTransport: row.delivery_transport ?? null,
       email: row.email,
       role: row.role,
       lifecycleStatus: expired ? "expired" : row.status,
@@ -282,7 +286,7 @@ export function createApp(
     row: InvitationRecord | undefined,
     uncertainResendConfirmed: boolean,
   ) => {
-    if (row?.status !== "pending" || !row.secret_envelope)
+    if (row?.status !== "pending" || !row.secret_envelope || new Date(row.expires_at).getTime() <= Date.now())
       return "invitation_not_deliverable";
     const decision = deliveryRetryDecision(
       row.delivery_status,
@@ -667,7 +671,7 @@ export function createApp(
       if (!admin.rowCount)
         return reply.code(404).send({ code: "team_not_found" });
       const rows = await pool.query<InvitationRecord>(
-        "SELECT id,team_id,email,role,status,expires_at,secret_envelope,delivery_status FROM invitations WHERE team_id=$1 ORDER BY created_at,id",
+        "SELECT i.id,i.team_id,i.email,i.role,i.status,i.expires_at,i.secret_envelope,i.delivery_status,a.transport delivery_transport FROM invitations i LEFT JOIN invitation_delivery_attempts a ON a.id=i.current_delivery_attempt_id WHERE i.team_id=$1 ORDER BY i.created_at,i.id",
         [request.params.teamId],
       );
       reply.headers({
@@ -697,7 +701,7 @@ export function createApp(
           [auth.sessionDigest],
         );
         revoked = await client.query(
-          "UPDATE invitations i SET status='revoked',revoked_at=COALESCE(revoked_at,now()),secret_envelope=NULL,delivery_status=CASE WHEN i.delivery_status='queued' THEN 'uncertain' ELSE i.delivery_status END FROM memberships m WHERE i.id=$1 AND m.team_id=i.team_id AND m.user_id=$2 AND m.role='administrator' AND m.status='active' AND i.status='pending' RETURNING i.id",
+          "UPDATE invitations i SET status='revoked',revoked_at=COALESCE(i.revoked_at,now()),secret_envelope=NULL,delivery_status=CASE WHEN i.delivery_status='queued' THEN 'uncertain' ELSE i.delivery_status END FROM memberships m WHERE i.id=$1 AND m.team_id=i.team_id AND m.user_id=$2 AND m.role='administrator' AND m.status='active' AND i.status='pending' RETURNING i.id",
           [request.params.invitationId, auth.userId],
         );
         await client.query("COMMIT");
@@ -762,22 +766,32 @@ export function createApp(
       });
       const attemptId = randomUUID();
       const attemptGeneration = (deliveryRow.delivery_attempts ?? 0) + 1;
+      const deliveryPermit = {generation:options.writerGeneration?.(),nonce:options.writerNonce?.()};
       const claimClient = await pool.connect();
       try {
-        if (!(await beginAuthorityTransaction(claimClient)))
+        if (!(await beginAuthorityTransaction(claimClient, deliveryPermit)))
           return reply.code(503).send({ code: "writer_ownership_lost" });
+        const administrator = await claimClient.query(
+          "SELECT 1 FROM memberships WHERE team_id=$1 AND user_id=$2 AND role='administrator' AND status='active' FOR SHARE",
+          [deliveryRow.team_id, auth.userId],
+        );
+        if (!administrator.rowCount) {
+          await claimClient.query("ROLLBACK");
+          return reply.code(404).send({ code: "team_not_found" });
+        }
         await claimClient.query(
-          "INSERT INTO invitation_delivery_attempts(id,invitation_id,generation,status,recipient_email,selected_role,transport) VALUES($1,$2,$3,'sending',$4,$5,'local_capture')",
+          "INSERT INTO invitation_delivery_attempts(id,invitation_id,generation,status,recipient_email,selected_role,transport) VALUES($1,$2,$3,'sending',$4,$5,$6)",
           [
             attemptId,
             deliveryRow.id,
             attemptGeneration,
             deliveryRow.email,
             deliveryRow.role,
+            options.deliveryTransport ?? "local_capture",
           ],
         );
         const claimed = await claimClient.query(
-          "UPDATE invitations SET delivery_status='queued',delivery_attempts=$3,current_delivery_attempt_id=$4 WHERE id=$1 AND status='pending' AND delivery_status=$2 RETURNING id",
+          "UPDATE invitations SET delivery_status='queued',delivery_attempts=$3,current_delivery_attempt_id=$4 WHERE id=$1 AND status='pending' AND expires_at>now() AND delivery_status=$2 RETURNING id",
           [
             deliveryRow.id,
             deliveryRow.delivery_status,
@@ -792,6 +806,8 @@ export function createApp(
         await claimClient.query("COMMIT");
       } catch (error) {
         await claimClient.query("ROLLBACK");
+        if ((error as {code?:string}).code === "23505")
+          return reply.code(409).send({ code: "delivery_not_eligible" });
         throw error;
       } finally {
         claimClient.release();
@@ -799,16 +815,17 @@ export function createApp(
       let outcome: "sent" | "failed" | "uncertain";
       try {
         outcome = await options.deliverInvitation({
+          messageId: attemptId,
           to: deliveryRow.email,
           ...message,
         });
       } catch {
-        outcome = "failed";
+        outcome = "uncertain";
       }
       const completionClient = await pool.connect();
       let completed;
       try {
-        if (!(await beginAuthorityTransaction(completionClient)))
+        if (!(await beginAuthorityTransaction(completionClient, deliveryPermit)))
           return reply.code(503).send({ code: "writer_ownership_lost" });
         completed = await completionClient.query(
           "UPDATE invitations SET delivery_status=$3,last_delivery_at=now() WHERE id=$1 AND status='pending' AND current_delivery_attempt_id=$2 RETURNING id",
@@ -827,7 +844,7 @@ export function createApp(
       }
       if (!completed.rowCount)
         return reply.code(409).send({ code: "invitation_terminal" });
-      return { deliveryStatus: outcome };
+      return { deliveryStatus: outcome, deliveryTransport: options.deliveryTransport ?? "local_capture" };
     },
   );
   app.post("/api/invitations/accept", async (request, reply) => {
@@ -1052,7 +1069,7 @@ export function createApp(
     const invitationRows =
       teamId && board.rows[0]?.role === "administrator"
         ? await pool.query<InvitationRecord>(
-            "SELECT id,team_id,email,role,status,expires_at,secret_envelope,delivery_status FROM invitations WHERE team_id=$1 ORDER BY created_at,id",
+            "SELECT i.id,i.team_id,i.email,i.role,i.status,i.expires_at,i.secret_envelope,i.delivery_status,a.transport delivery_transport FROM invitations i LEFT JOIN invitation_delivery_attempts a ON a.id=i.current_delivery_attempt_id WHERE i.team_id=$1 ORDER BY i.created_at,i.id",
             [teamId],
           )
         : { rows: [] };
@@ -1064,6 +1081,7 @@ export function createApp(
       members: members.rows,
       invitations: invitationRows.rows.map(invitationDto),
       deliveryAvailable: Boolean(options.deliverInvitation),
+      deliveryTransport: options.deliveryTransport ?? "local_capture",
     };
   });
   app.get<{ Params: { boardId: string } }>(

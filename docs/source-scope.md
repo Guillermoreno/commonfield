@@ -1,6 +1,6 @@
 # Source scope
 
-This repository publishes only the application modules (access control, board content, collaboration, shared utilities, web client and writer authority), eight SQL migrations, pinned package/build configuration, selected portable tests, and the new deployment scripts/documentation.
+This repository publishes only the application modules (access control, board content, collaboration, shared utilities, web client and writer authority), nine SQL migrations, pinned package/build configuration, selected portable tests, and the new deployment scripts/documentation.
 
 Machine-specific review infrastructure, registry/attestation enrollment tooling, privileged integration fixtures, planning/design/review archives, historical evidence snapshots, agent configuration, generated build directories, dependency installations and runtime credentials are not part of this release. Those excluded original workflows were not edited or weakened. This package has a distinct portable startup and schema-migration entrypoint using fresh install-owned credentials.
 

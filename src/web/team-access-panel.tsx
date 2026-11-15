@@ -8,14 +8,30 @@ export type MemberRow = {
 export type InvitationRow = MemberRow & {
   lifecycle: "pending" | "accepted" | "revoked" | "expired";
   delivery: "not_requested" | "queued" | "sent" | "failed" | "uncertain";
+  transport?: "local_capture" | "smtp" | null;
   url: string;
 };
+
+export function invitationDeliveryLabel(
+  invitation: Pick<InvitationRow, "delivery" | "transport">,
+): string {
+  if (invitation.delivery !== "sent")
+    return invitation.delivery === "not_requested"
+      ? "Unsent"
+      : invitation.delivery;
+  if (invitation.transport === "smtp")
+    return "SMTP accepted (not inbox confirmed)";
+  if (invitation.transport === "local_capture")
+    return "Captured locally (not emailed)";
+  return "Transport accepted (historical transport unknown)";
+}
 
 export function TeamAccessPanel(
   props: Readonly<{
     members: MemberRow[];
     invitations: InvitationRow[];
     deliveryAvailable?: boolean;
+    deliveryTransport?: "local_capture" | "smtp";
     deliveryUnavailableReason?: string;
     onCopy(url: string): void;
     onSend(id: string, uncertainResendConfirmed: boolean): void | Promise<void>;
@@ -64,6 +80,11 @@ export function TeamAccessPanel(
       </div>
       <div className="access-list">
         <h3>Invitations</h3>
+        <p>
+          {props.deliveryTransport === "smtp"
+            ? "SMTP delivery enabled; acceptance does not confirm inbox delivery."
+            : "Local capture only; invitations are not emailed."}
+        </p>
         {props.invitations.map((invitation) => {
           const pendingAction = pending[invitation.id];
           let sendLabel: "Send" | "Retry" | "Resend" | null = null;
@@ -78,7 +99,7 @@ export function TeamAccessPanel(
               <span>{invitation.email}</span>
               <strong>{invitation.role}</strong>
               <span aria-label={`Delivery ${invitation.delivery}`}>
-                {invitation.delivery}
+                {invitationDeliveryLabel(invitation)}
               </span>
               {invitation.url ? (
                 <input
