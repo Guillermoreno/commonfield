@@ -29,6 +29,24 @@ METRICS = ('coverage', 'duplicated_lines_density', 'reliability_rating', 'securi
            'sqale_rating', 'violations', 'security_hotspots', 'security_hotspots_reviewed')
 MAX_ZIP = 20 * 1024 * 1024
 
+# User-approved issue-level disposition, bound to the ENTIRE reviewed Git file.
+# Authority is these installed, hash-pinned worker bytes, never PR metadata/config.
+CANVAS_PATH = 'src/web/main.tsx'
+CANVAS_SHA256 = 'dfe8fa43b17a4315375a984b38f0e512d960da11881c165d413b594e8fb0d086'
+CANVAS_FINDINGS = (('typescript:S6847', 1250), ('typescript:S6845', 1255))
+CANVAS_RATIONALE = (
+    'User-approved false positive for the reviewed Spatial board canvas only. '
+    'WAI-ARIA 1.2 application (https://www.w3.org/TR/wai-aria-1.2/#application) '
+    'permits focusable custom spatial keyboard/gesture editors; HTML-ARIA '
+    '(https://www.w3.org/TR/html-aria/#el-div) permits application on div. '
+    'There is no corresponding native widget. This canvas is named and described, '
+    'has tabIndex=0, and arrow-pans only when event.target === event.currentTarget, '
+    'preserving native child editing. The widget-superclass heuristic flags this '
+    'valid application structure. This is not vendor acknowledgment or a claim of '
+    'full assistive-technology conformance. Approval applies only to S6847 at line '
+    '1250 and S6845 at line 1255, file '+CANVAS_PATH+' SHA-256 '+CANVAS_SHA256+'.'
+)
+
 
 class Reject(Exception):
     """Only locally authored stable codes belong in this exception."""
@@ -469,8 +487,85 @@ class Worker:
         materialize(repo, sha, source)
         return source
 
+    def analysis(self, project, analysis_id, sha):
+        verify_analysis(self.sonar('project_analyses/search', {'project': project, 'ps': 2})['analyses'],
+                        analysis_id, sha)
+
+    def metrics(self, project, analysis_id, sha):
+        """Only authoritative overall measures, bracketed by exact analysis/revision."""
+        self.analysis(project, analysis_id, sha)
+        measures = self.sonar('measures/component', {'component': project, 'metricKeys': ','.join(METRICS)})
+        if measures['component']['key'] != project:
+            raise Reject('measure_project_binding')
+        metrics = {m['metric']: m['value'] for m in measures['component']['measures'] if 'value' in m}
+        self.analysis(project, analysis_id, sha)
+        return metrics
+
+    def issue(self, expected):
+        rows = self.sonar('issues/search', {'issues': expected['key'], 'additionalFields': 'comments', 'ps': 2})
+        issues = rows['issues']
+        if rows['paging']['total'] != 1 or len(issues) != 1:
+            raise Reject('classification_issue_readback')
+        issue = issues[0]
+        if any(issue.get(k) != expected.get(k) for k in ('key', 'rule', 'component', 'line')):
+            raise Reject('classification_issue_identity')
+        return issue
+
+    def classify_canvas(self, project, analysis_id, sha, source_hash):
+        """Fresh owned analysis only. Never called on cached receipt evidence."""
+        if source_hash != CANVAS_SHA256:
+            return []
+        self.analysis(project, analysis_id, sha)
+        issues, total = [], None
+        # Collect BEFORE mutating: false-positive transitions change unresolved pagination.
+        for page in range(1, 21):
+            response = self.sonar('issues/search', {'componentKeys': project, 'resolved': 'false',
+                                                   'ps': 500, 'p': page})
+            count = response['paging']['total']
+            if type(count) is not int or not 0 <= count <= 10000 or (total is not None and count != total):
+                raise Reject('classification_issue_total')
+            total = count
+            issues.extend(response['issues'])
+            if len(issues) >= total:
+                break
+            if not response['issues']:
+                raise Reject('classification_issue_incomplete')
+        if len(issues) != total or len({i['key'] for i in issues}) != total:
+            raise Reject('classification_issue_incomplete')
+        selected = [i for i in issues if i.get('component') == project+':'+CANVAS_PATH
+                    and (i.get('rule'), i.get('line')) in CANVAS_FINDINGS]
+        if len({(i['rule'], i['line']) for i in selected}) != len(selected):
+            raise Reject('classification_issue_ambiguous')
+        audit = []
+        for expected in selected:
+            self.analysis(project, analysis_id, sha)
+            issue = self.issue(expected)
+            if issue.get('resolution') == 'FALSE-POSITIVE' and issue.get('status') == 'RESOLVED':
+                continue
+            if issue.get('resolution') or issue.get('status') not in ('OPEN', 'CONFIRMED', 'REOPENED'):
+                raise Reject('classification_issue_state')
+            before = {'status': issue['status'], 'resolution': issue.get('resolution', '')}
+            # Verify comments independently; no repeated comment on a partial retry.
+            if not any(c.get('markdown') == CANVAS_RATIONALE for c in issue.get('comments', [])):
+                self.sonar('issues/add_comment', {'issue': issue['key'], 'text': CANVAS_RATIONALE}, True)
+                issue = self.issue(expected)
+                if not any(c.get('markdown') == CANVAS_RATIONALE for c in issue.get('comments', [])):
+                    raise Reject('classification_comment_readback')
+            self.analysis(project, analysis_id, sha)
+            self.sonar('issues/do_transition', {'issue': issue['key'], 'transition': 'falsepositive'}, True)
+            observed = self.issue(expected)
+            if observed.get('resolution') != 'FALSE-POSITIVE' or observed.get('status') != 'RESOLVED':
+                raise Reject('classification_transition_readback')
+            audit.append({k: observed[k] for k in ('key', 'rule', 'component', 'line', 'status', 'resolution')})
+            audit[-1].update(before=before, source_sha256=source_hash, sha=sha, analysis_id=analysis_id,
+                             rationale=CANVAS_RATIONALE)
+        self.analysis(project, analysis_id, sha)
+        return audit
+
     def scan(self, pr, run, source, lcov, root):
         sha = pr['head']['sha']
+        canvas = source/CANVAS_PATH
+        source_hash = hashlib.sha256(canvas.read_bytes()).hexdigest() if canvas.is_file() else None
         key = 'commonfield-pr-'+str(pr['number'])+'-'+sha+'-'+uuid.uuid4().hex[:10]
         self.context = {'project': key, 'sha': sha, 'run_id': run['id']}
         self.phase = 'project_create'
@@ -524,16 +619,17 @@ class Worker:
                     raise Reject('compute_task_failed_or_timeout')
                 time.sleep(3)
             aid = task['analysisId']
-            analyses = self.sonar('project_analyses/search', {'project': key, 'ps': 2})['analyses']
-            verify_analysis(analyses, aid, sha)
-            measures = self.sonar('measures/component', {'component': key, 'metricKeys': ','.join(METRICS)})
-            if measures['component']['key'] != key:
-                raise Reject('measure_project_binding')
-            metrics = {m['metric']: m['value'] for m in measures['component']['measures'] if 'value' in m}
-            verify_analysis(self.sonar('project_analyses/search', {'project': key, 'ps': 2})['analyses'], aid, sha)
+            self.analysis(key, aid, sha)
+            if (hashlib.sha256(canvas.read_bytes()).hexdigest() if canvas.is_file() else None) != source_hash:
+                raise Reject('classification_source_changed')
+            self.phase = 'issue_classification'
+            classifications = self.classify_canvas(key, aid, sha, source_hash)
+            self.phase = 'overall_metrics'
+            metrics = self.metrics(key, aid, sha)
             return {'project': key, 'analysis_id': aid, 'task_id': task_id, 'sha': sha,
                     'run_id': run['id'], 'run_attempt': run['run_attempt'], 'metrics': metrics,
-                    'failures': evaluate(metrics)}
+                    'source_binding': {'path': CANVAS_PATH, 'sha256': source_hash},
+                    'classifications': classifications, 'failures': evaluate(metrics)}
         finally:
             if token:
                 self.sonar('user_tokens/revoke', {'name': token_name}, True)
@@ -570,6 +666,18 @@ class Worker:
                     'Waiting for current exact-head CI analysis' if pending else 'Exact-head CI phases failed validation')
 
     def terminal_policy(self, pr, run, receipt):
+        # An analysis ID is immutable; issue dispositions and overall metrics are not.
+        # Refresh BOTH fresh and cached decisions; cached evidence NEVER authorizes writes.
+        self.phase = 'terminal_metrics'
+        metrics = self.metrics(receipt['project'], receipt['analysis_id'], pr['head']['sha'])
+        failures = evaluate(metrics)
+        if run['conclusion'] == 'failure':  # authenticated phases proved coverage-only
+            failures.append('vitest_lines')
+        if receipt.get('metrics') != metrics or receipt.get('failures') != failures:
+            if 'previous_measurement' not in receipt and 'metrics' in receipt:
+                receipt['previous_measurement'] = {'metrics': receipt['metrics'], 'failures': receipt['failures']}
+            receipt.update(metrics=metrics, failures=failures)
+            self.save()
         # Recheck after the scan/analysis readback, for BOTH cached and fresh paths.
         # Re-read after the jobs request too: a new attempt can start during that request.
         latest = self.latest_run(pr['head']['sha'])

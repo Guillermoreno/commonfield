@@ -401,7 +401,13 @@ class PhaseTests(unittest.TestCase):
         w.artifact = lambda *args: {'id':123, 'digest':'sha256:'+'a'*64}
         receipt = dict(failures=['coverage', 'reliability_rating', 'violations'], project='test',
                        analysis_id='analysis', artifact_id=123, artifact_digest='sha256:'+'a'*64)
-        w.sonar = lambda *args: {'analyses': [{'key':'analysis', 'revision':'a'*40}]}
+        def sonar(endpoint, params, post=False):
+            if endpoint == 'measures/component':
+                metrics = receipt.get('metrics', LiveMetricsTests.good())
+                return {'component': {'key': receipt['project'], 'measures':
+                    [dict(metric=k, value=v) for k, v in metrics.items()]}}
+            return {'analyses': [{'key':'analysis', 'revision':'a'*40}]}
+        w.sonar = sonar
         return w, pr, run, posts, receipt
 
     def test_coverage_only_ci_reaches_real_policy_failure(self):
@@ -481,9 +487,10 @@ class PhaseTests(unittest.TestCase):
                         latest.update(run_attempt=2, status=status, conclusion=conclusion)
                     if cached:
                         w.state = {'receipts': {g.receipt_key('a'*40,run,'review1'): receipt}}
+                        previous_sonar = w.sonar
                         def sonar(*args):
                             change()
-                            return {'analyses':[{'key':'analysis','revision':'a'*40}]}
+                            return previous_sonar(*args)
                         w.sonar = sonar
                     else:
                         w.artifact = lambda *args: {'id':123,'digest':'sha256:'+hashlib.sha256(b'zip').hexdigest()}
@@ -497,6 +504,272 @@ class PhaseTests(unittest.TestCase):
                         w.run_pr(pr)
                     # Both old success AND old policy failure are deferred to the new attempt.
                     self.assertEqual(posts[-1], 'failure' if conclusion in ('cancelled', 'failure') else 'pending')
+
+
+class ClassificationTests(unittest.TestCase):
+    """Synthetic API responses; exercise the real scan, not a live Sonar server."""
+    # A test-only reviewed source snapshot keeps this suite valid when real canvas
+    # bytes change (which must revoke the PRODUCTION approval, not break the suite).
+    fixture_data = b'reviewed spatial canvas fixture\n'
+    approved_hash = g.hashlib.sha256(fixture_data).hexdigest()
+
+    def test_production_approval_is_exact_and_not_configurable(self):
+        self.assertEqual(g.CANVAS_PATH, 'src/web/main.tsx')
+        self.assertEqual(g.CANVAS_SHA256, 'dfe8fa43b17a4315375a984b38f0e512d960da11881c165d413b594e8fb0d086')
+        self.assertEqual(g.CANVAS_FINDINGS, (('typescript:S6847', 1250), ('typescript:S6845', 1255)))
+        self.assertIn(g.CANVAS_SHA256, g.CANVAS_RATIONALE)
+
+    def fixture(self, root, changed=False, faults=None):
+        import copy
+        w = object.__new__(g.Worker)
+        w.cfg = {'sonar_url': 'http://127.0.0.1:9000', 'scanner_image': 'sha256:'+'a'*64}
+        pr = {'number': 7, 'head': {'sha': 'a'*40}, 'approved_source_sha256': self.approved_hash}
+        run = {'id': 12, 'run_attempt': 1}
+        source = root/'candidate'
+        (source/'src/web').mkdir(parents=True)
+        (source/'src/web/main.tsx').write_bytes(self.fixture_data + (b'\n' if changed else b''))
+        state = {'issues': [], 'writes': [], 'reads': [], 'key': None}
+        faults = faults or {}
+
+        def sonar(endpoint, params, post=False):
+            if post:
+                state['writes'].append((endpoint, dict(params)))
+            else:
+                state['reads'].append((endpoint, dict(params)))
+            if endpoint == 'projects/create':
+                state['key'] = params['project']
+                state['issues'] = [dict(key='issue-'+str(i), rule=rule, line=line,
+                    component=state['key']+':src/web/main.tsx', status='OPEN', resolution='', comments=[])
+                    for i, (rule, line) in enumerate([('typescript:S6847', 1250), ('typescript:S6845', 1255)])]
+                if faults.get('edit'):
+                    faults['edit'](state['issues'])
+                return {}
+            if endpoint == 'components/show':
+                return {'component': {'key': state['key']}}
+            if endpoint == 'user_tokens/generate':
+                return {'token': 'scanner-only-fixture', 'type': 'PROJECT_ANALYSIS_TOKEN'}
+            if endpoint in ('user_tokens/revoke', 'user_tokens/search'):
+                return {'userTokens': []}
+            if endpoint == 'ce/task':
+                return {'task': {'id': 'task', 'componentKey': state['key'], 'status': 'SUCCESS', 'analysisId': 'analysis'}}
+            if endpoint == 'project_analyses/search':
+                return {'analyses': [{'key': 'analysis', 'revision': 'a'*40}]}
+            if endpoint == 'issues/search':
+                if 'issues' in params:
+                    rows = [i for i in state['issues'] if i['key'] == params['issues']]
+                else:
+                    self.assertEqual(params['componentKeys'], state['key'])
+                    self.assertEqual(params['resolved'], 'false')
+                    rows = [i for i in state['issues'] if not i['resolution']]
+                total = len(rows)
+                if 'p' in params:
+                    start = (params['p']-1)*params['ps']
+                    rows = rows[start:start+params['ps']]
+                return {'issues': copy.deepcopy(rows), 'paging': {'total': total}}
+            if endpoint == 'issues/add_comment':
+                issue = next(i for i in state['issues'] if i['key'] == params['issue'])
+                if not faults.get('missing_comment'):
+                    issue['comments'].append({'markdown': params['text']})
+                return {'issue': copy.deepcopy(issue)}
+            if endpoint == 'issues/do_transition':
+                self.assertEqual(params['transition'], 'falsepositive')
+                if faults.get('transition') == 'error':
+                    raise g.Reject('fixture_transition_failed')
+                issue = next(i for i in state['issues'] if i['key'] == params['issue'])
+                if faults.get('transition') != 'mismatch':
+                    issue.update(status='RESOLVED', resolution='FALSE-POSITIVE')
+                if faults.get('transition') == 'wrong-location':
+                    issue['line'] = 1251
+                return {'issue': copy.deepcopy(issue)}
+            if endpoint == 'measures/component':
+                metrics = LiveMetricsTests.good()
+                metrics['violations'] = str(sum(not i['resolution'] for i in state['issues']))
+                return {'component': {'key': state['key'], 'measures': [dict(metric=k, value=v) for k, v in metrics.items()]}}
+            self.fail('Unexpected API request: '+endpoint)
+        w.sonar = sonar
+        return w, pr, run, source, state
+
+    def scan(self, root, changed=False, faults=None, source_bytes=None):
+        from contextlib import nullcontext
+        from unittest.mock import patch
+        w, pr, run, source, state = self.fixture(root, changed, faults)
+        if source_bytes is not None:
+            (source/'src/web/main.tsx').write_bytes(source_bytes)
+        approval = patch.object(g, 'CANVAS_SHA256', self.approved_hash) if source_bytes is None else nullcontext()
+        def sandbox(args):
+            (root/'output/report-task.txt').write_text('ceTaskId=task\nprojectKey='+state['key']+'\n')
+        with approval, patch.object(g, 'run_sandbox', sandbox), patch.object(g.os, 'getuid', return_value=1001), patch.object(g.os, 'getgid', return_value=1001):
+            receipt = w.scan(pr, run, source, 'fixture LCOV', root)
+        return w, receipt, state
+
+    def test_real_candidate_bytes_obey_production_approval_without_test_override(self):
+        actual = (P.parents[2]/'src/web/main.tsx').read_bytes()
+        for data in (actual, actual+b'\n'):
+            with self.subTest(source_hash=g.hashlib.sha256(data).hexdigest()), tempfile.TemporaryDirectory() as d:
+                w, receipt, state = self.scan(pathlib.Path(d), source_bytes=data)
+                approved = g.hashlib.sha256(data).hexdigest() == g.CANVAS_SHA256
+                self.assertEqual(receipt['metrics']['violations'], '0' if approved else '2')
+                self.assertEqual(len(receipt['classifications']), 2 if approved else 0)
+
+    def test_exact_source_and_pair_get_two_audited_classifications_and_real_metrics(self):
+        with tempfile.TemporaryDirectory() as d:
+            w, receipt, state = self.scan(pathlib.Path(d))
+            self.assertEqual(receipt['metrics']['violations'], '0')
+            self.assertEqual(receipt['failures'], [])
+            writes = state['writes']
+            self.assertEqual(len([e for e, p in writes if e == 'issues/add_comment']), 2)
+            self.assertEqual(len([e for e, p in writes if e == 'issues/do_transition']), 2)
+            audit = receipt['classifications']
+            self.assertEqual(receipt['source_binding'], {'path': 'src/web/main.tsx', 'sha256': self.approved_hash})
+            self.assertEqual({a['key'] for a in audit}, {'issue-0', 'issue-1'})
+            for a in audit:
+                self.assertEqual(a['resolution'], 'FALSE-POSITIVE')
+                self.assertEqual(a['status'], 'RESOLVED')
+                self.assertIn('https://www.w3.org/TR/wai-aria-1.2/#application', a['rationale'])
+                self.assertEqual(a['source_sha256'], self.approved_hash)
+                self.assertEqual(a['analysis_id'], receipt['analysis_id'])
+                self.assertEqual(a['sha'], 'a'*40)
+            before = list(writes)
+            # Repeating a proven classification cannot add comments or transitions.
+            from unittest.mock import patch
+            with patch.object(g, 'CANVAS_SHA256', self.approved_hash):
+                self.assertEqual(w.classify_canvas(receipt['project'], 'analysis', 'a'*40, self.approved_hash), [])
+            self.assertEqual(writes, before)
+
+    def test_changed_source_cannot_be_authorized_by_pr_metadata(self):
+        with tempfile.TemporaryDirectory() as d:
+            w, receipt, state = self.scan(pathlib.Path(d), changed=True)
+            self.assertEqual(receipt['metrics']['violations'], '2')
+            self.assertIn('violations', receipt['failures'])
+            self.assertFalse(any(e.startswith('issues/') for e, p in state['writes']))
+
+    def test_other_rules_paths_lines_and_projects_stay_unresolved(self):
+        for field, value in [('rule', 'typescript:S9999'), ('component', 'elsewhere:src/web/main.tsx'),
+                             ('component', 'another-project:src/web/main.tsx'), ('line', 1251),
+                             ('component', ':src/web/other.tsx')]:
+            with self.subTest(field=field, value=value), tempfile.TemporaryDirectory() as d:
+                def edit(issues):
+                    issues[0][field] = value
+                w, receipt, state = self.scan(pathlib.Path(d), faults={'edit': edit})
+                self.assertEqual(receipt['metrics']['violations'], '1')
+                self.assertIn('violations', receipt['failures'])
+                self.assertEqual(state['issues'][0]['resolution'], '')
+                self.assertEqual([p['issue'] for e, p in state['writes'] if e == 'issues/do_transition'], ['issue-1'])
+
+    def test_already_false_positive_has_no_duplicate_writes(self):
+        with tempfile.TemporaryDirectory() as d:
+            def edit(issues):
+                for issue in issues:
+                    issue.update(status='RESOLVED', resolution='FALSE-POSITIVE')
+            w, receipt, state = self.scan(pathlib.Path(d), faults={'edit': edit})
+            self.assertEqual(receipt['metrics']['violations'], '0')
+            self.assertFalse(any(e.startswith('issues/') for e, p in state['writes']))
+
+    def test_paginated_unrelated_findings_are_preserved_in_real_metrics(self):
+        with tempfile.TemporaryDirectory() as d:
+            def edit(issues):
+                unrelated = [dict(issues[0], key='unrelated-'+str(n), rule='typescript:S9999') for n in range(501)]
+                issues[:] = unrelated + issues
+            w, receipt, state = self.scan(pathlib.Path(d), faults={'edit': edit})
+            self.assertEqual(receipt['metrics']['violations'], '501')
+            self.assertEqual(len(receipt['classifications']), 2)
+            self.assertIn('violations', receipt['failures'])
+            self.assertEqual([p['p'] for e, p in state['reads'] if e == 'issues/search' and 'p' in p], [1, 2])
+            self.assertEqual(sum(not i['resolution'] for i in state['issues']), 501)
+
+    def test_ambiguous_duplicate_matches_fail_without_classification_writes(self):
+        with tempfile.TemporaryDirectory() as d:
+            w, pr, run, source, state = self.fixture(pathlib.Path(d))
+            w.sonar('projects/create', {'project': 'owned'}, True)
+            state['issues'].append(dict(state['issues'][0], key='duplicate'))
+            from unittest.mock import patch
+            with patch.object(g, 'CANVAS_SHA256', self.approved_hash), self.assertRaises(g.Reject):
+                w.classify_canvas('owned', 'analysis', 'a'*40, self.approved_hash)
+            self.assertFalse(any(e.startswith('issues/') for e, p in state['writes']))
+
+    def test_missing_comment_readback_fails_before_transition(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaisesRegex(g.Reject, 'classification_comment_readback'):
+                self.scan(pathlib.Path(d), faults={'missing_comment': True})
+
+    def test_failed_transition_or_wrong_readback_cannot_return_green(self):
+        for fault in ('error', 'mismatch', 'wrong-location'):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as d:
+                with self.assertRaises(g.Reject):
+                    self.scan(pathlib.Path(d), faults={'transition': fault})
+
+
+class LiveMetricsTests(unittest.TestCase):
+    @staticmethod
+    def good():
+        return dict(coverage='86.7', duplicated_lines_density='0.6', reliability_rating='1',
+                    security_rating='1', sqale_rating='1', violations='0', security_hotspots='0')
+
+    def exercise(self, root, cached, old, current, conclusion='success', fault=None):
+        from unittest.mock import patch
+        import copy
+        w, pr, run, posts, receipt = PhaseTests().worker(root)
+        run['conclusion'] = conclusion
+        w.phases = lambda run: True
+        receipt.update(metrics=old, failures=g.evaluate(old), sha='a'*40, run_id=12, run_attempt=1)
+        w.artifact = lambda *args: {'id': 123, 'digest': 'sha256:'+g.hashlib.sha256(b'zip').hexdigest()}
+        receipt['artifact_digest'] = w.artifact()['digest']
+        w.source = lambda pr, root: root
+        w.github = lambda *args, **kwargs: b'zip'
+        w.scan = lambda *args: copy.deepcopy(receipt)
+        reads = []
+        def sonar(endpoint, params, post=False):
+            self.assertFalse(post, 'cached/terminal refresh must not classify issues')
+            reads.append(endpoint)
+            if endpoint == 'project_analyses/search':
+                aid = 'changed' if fault == 'analysis' and reads.count(endpoint) > 1 else 'analysis'
+                return {'analyses': [{'key': aid, 'revision': 'a'*40}]}
+            self.assertEqual(endpoint, 'measures/component')
+            return {'component': {'key': 'other' if fault == 'project' else 'test', 'measures':
+                [dict(metric=k, value=v) for k, v in current.items()]}}
+        w.sonar = sonar
+        if cached:
+            w.state = {'receipts': {g.receipt_key('a'*40, run, 'review1'): copy.deepcopy(receipt)}}
+        with patch.object(g, 'coverage', return_value='LCOV'):
+            w.run_pr(pr)
+        return posts, next(iter(w.state['receipts'].values())), reads
+
+    def test_fresh_and_cached_reopened_issue_changes_green_to_failure(self):
+        for cached in (True, False):
+            with self.subTest(cached=cached), tempfile.TemporaryDirectory() as d:
+                posts, receipt, reads = self.exercise(pathlib.Path(d), cached, self.good(), dict(self.good(), violations='1'))
+                self.assertEqual(posts[-1], 'failure')
+                self.assertEqual(receipt['metrics']['violations'], '1')
+                self.assertIn('violations', receipt['failures'])
+                self.assertEqual(reads[-3:], ['project_analyses/search', 'measures/component', 'project_analyses/search'])
+
+    def test_authoritative_classification_metrics_change_failure_to_green(self):
+        for cached in (True, False):
+            with self.subTest(cached=cached), tempfile.TemporaryDirectory() as d:
+                posts, receipt, reads = self.exercise(pathlib.Path(d), cached, dict(self.good(), violations='2'), self.good())
+                self.assertEqual(posts[-1], 'success')
+                self.assertEqual(receipt['metrics']['violations'], '0')
+                self.assertEqual(receipt['failures'], [])
+
+    def test_cached_missing_metric_fails_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            metrics = self.good()
+            del metrics['coverage']
+            posts, receipt, reads = self.exercise(pathlib.Path(d), True, self.good(), metrics)
+            self.assertEqual(posts[-1], 'failure')
+            self.assertIn('coverage', receipt['failures'])
+
+    def test_cached_proven_vitest_failure_is_not_erased_by_sonar_green(self):
+        with tempfile.TemporaryDirectory() as d:
+            posts, receipt, reads = self.exercise(pathlib.Path(d), True, self.good(), self.good(), conclusion='failure')
+            self.assertEqual(posts[-1], 'failure')
+            self.assertEqual(receipt['failures'], ['vitest_lines'])
+
+    def test_refresh_rejects_analysis_race_and_wrong_measure_project(self):
+        for fault in ('analysis', 'project'):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as d:
+                with self.assertRaises(g.Reject):
+                    self.exercise(pathlib.Path(d), True, self.good(), self.good(), fault=fault)
 
 
 if __name__ == '__main__':
