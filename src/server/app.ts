@@ -247,7 +247,6 @@ export function createApp(
     if (!row.secret_envelope || !options.invitationEnvelopeKey)
       throw new Error("invitation_envelope_invalid");
     return openInvitationSecret(row.secret_envelope, invitationContext(row), options.invitationEnvelopeKey);
-    throw new Error("invitation_envelope_invalid");
   };
   const invitationDto = (row: InvitationRecord) => {
     const expired =
@@ -314,6 +313,20 @@ export function createApp(
           ).rowCount,
         ),
     });
+  const deliveryClaimFailure = (error: unknown, reply: FastifyReply) => {
+    if ((error as { code?: string }).code === "23505")
+      return reply.code(409).send({ code: "delivery_not_eligible" });
+    throw error;
+  };
+  const sendInvitation = async (
+    message: Parameters<NonNullable<typeof options.deliverInvitation>>[0],
+  ): Promise<"sent" | "failed" | "uncertain"> => {
+    try {
+      return await options.deliverInvitation!(message);
+    } catch {
+      return "uncertain";
+    }
+  };
   type Subscription = {
     userId: string;
     sessionDigest: string;
@@ -330,9 +343,9 @@ export function createApp(
         subscription.socket.close(1013, "writer_ownership_lost");
     subscriptions.clear();
   });
-  void app.register(cookie);
-  void app.register(websocket);
-  void app.register(fastifyStatic, {
+  app.register(cookie);
+  app.register(websocket);
+  app.register(fastifyStatic, {
     root:
       options.webRoot ??
       fileURLToPath(new URL("../../../web", import.meta.url)),
@@ -806,22 +819,15 @@ export function createApp(
         await claimClient.query("COMMIT");
       } catch (error) {
         await claimClient.query("ROLLBACK");
-        if ((error as {code?:string}).code === "23505")
-          return reply.code(409).send({ code: "delivery_not_eligible" });
-        throw error;
+        return deliveryClaimFailure(error, reply);
       } finally {
         claimClient.release();
       }
-      let outcome: "sent" | "failed" | "uncertain";
-      try {
-        outcome = await options.deliverInvitation({
-          messageId: attemptId,
-          to: deliveryRow.email,
-          ...message,
-        });
-      } catch {
-        outcome = "uncertain";
-      }
+      const outcome = await sendInvitation({
+        messageId: attemptId,
+        to: deliveryRow.email,
+        ...message,
+      });
       const completionClient = await pool.connect();
       let completed;
       try {

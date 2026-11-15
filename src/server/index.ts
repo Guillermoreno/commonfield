@@ -31,8 +31,7 @@ const connect = async (role: string, passwordFile: string) => {
   );
   const row = result.rows[0];
   if (
-    !row ||
-    row.current_user !== role ||
+    row?.current_user !== role ||
     row.rolsuper ||
     row.rolcreatedb ||
     row.rolcreaterole ||
@@ -61,6 +60,14 @@ const isAuthorityReady = () =>
   recoveredPermit !== null &&
   hasPermit(recoveredPermit.generation, recoveredPermit.nonce);
 const logger = new StructuredLogger();
+const completeRecovery = async (generation: bigint | null, nonce: string | null) => {
+  await recoverInvitationDeliveries(pool, generation, nonce);
+  // Recovery may commit after the lock connection dies. Expose only the
+  // exact still-owned permit, never a replacement owner's epoch.
+  if (shuttingDown || !hasPermit(generation, nonce)) return false;
+  recoveredPermit = { generation: generation!, nonce: nonce! };
+  return true;
+};
 const recoverAuthority = async () => {
   if (recovering || shuttingDown) return;
   recovering = true;
@@ -75,13 +82,7 @@ const recoverAuthority = async () => {
         ) {
           generation = authority.generation();
           nonce = authority.nonce();
-          await recoverInvitationDeliveries(pool, generation, nonce);
-          // Recovery may commit after the lock connection dies, before a new
-          // epoch is written. Only the exact still-owned permit can be exposed.
-          if (!shuttingDown && hasPermit(generation, nonce)) {
-            recoveredPermit = { generation: generation!, nonce: nonce! };
-            break;
-          }
+          if (await completeRecovery(generation, nonce)) break;
         }
       } catch {
         // A failed old recovery must not close a replacement owner's epoch.
