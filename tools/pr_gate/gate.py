@@ -353,9 +353,15 @@ def materialize(repo, sha, output):
         chosen.append((name, oid))
     if not chosen:
         raise Reject('source_empty')
+    output.chmod(0o755)
     for name, oid in chosen:
         dest = output/name
         dest.parent.mkdir(parents=True, exist_ok=True)
+        for directory in dest.parent.parents:
+            if directory == output:
+                break
+            directory.chmod(0o755)
+        dest.parent.chmod(0o755)
         dest.write_bytes(command(['git', '-C', str(repo), 'cat-file', 'blob', oid]))
         dest.chmod(0o444)
 
@@ -480,6 +486,7 @@ class Worker:
                 raise Reject('analysis_token_scope')
             config, output = root/'config', root/'output'
             config.mkdir(mode=0o755)
+            config.chmod(0o755)
             output.mkdir(mode=0o777)
             output.chmod(0o777)
             (source/'lcov.info').write_text(lcov)

@@ -265,8 +265,16 @@ class WorkerTests(unittest.TestCase):
                             'commit', '-qm', 'fixture'], check=True)
             sha = subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD']).decode().strip()
             out = root/'out'
-            out.mkdir()
-            g.materialize(repo, sha, out)
+            import os, stat
+            previous_umask = os.umask(0o077)
+            try:
+                out.mkdir()
+                g.materialize(repo, sha, out)
+            finally:
+                os.umask(previous_umask)
+            self.assertEqual(stat.S_IMODE(out.stat().st_mode), 0o755)
+            self.assertEqual(stat.S_IMODE((out/'src').stat().st_mode), 0o755)
+            self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o700)
             self.assertTrue((out/'src/a.ts').is_file())
             self.assertFalse((out/'package.json').exists())
             (repo/'src/link.ts').symlink_to('/etc/passwd')
