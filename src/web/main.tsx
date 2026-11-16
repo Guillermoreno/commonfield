@@ -845,6 +845,84 @@ function App() {
     );
     setMenuNoteId(note.id);
   };
+  const cancelKeyboardMove = (note: Sticky) => {
+    const origin = keyboardMoveOrigin.current;
+    if (origin?.id === note.id) {
+      updateNote(note.id, { x: origin.x, y: origin.y });
+      const intents = fieldIntents.current.get(note.id) ?? {};
+      if (origin.previousPositionIntent)
+        intents.position = origin.previousPositionIntent;
+      else delete intents.position;
+      if (hasFieldIntent(intents)) fieldIntents.current.set(note.id, intents);
+      else fieldIntents.current.delete(note.id);
+    }
+    setKeyboardMoveId(null);
+    keyboardMoveOrigin.current = null;
+  };
+  const handleKeyboardMoveKey = (
+    note: Sticky,
+    event: React.KeyboardEvent<HTMLButtonElement>,
+  ) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      cancelKeyboardMove(note);
+      return;
+    }
+    if (event.key === "Enter" || event.code === "Space") {
+      event.preventDefault();
+      event.stopPropagation();
+      setKeyboardMoveId(null);
+      keyboardMoveOrigin.current = null;
+      if (note.version > 0) enqueueSpatial(note, false, "position");
+      return;
+    }
+    const step = event.shiftKey ? 1 : 10;
+    const movement: Record<string, [number, number]> = {
+      ArrowLeft: [-step, 0],
+      ArrowRight: [step, 0],
+      ArrowUp: [0, -step],
+      ArrowDown: [0, step],
+    };
+    const delta = movement[event.key];
+    if (!delta) return;
+    event.preventDefault();
+    const moved = {
+      ...note,
+      x: note.x + delta[0],
+      y: note.y + delta[1],
+    };
+    updateNote(note.id, moved);
+    fieldIntents.current.set(note.id, {
+      ...fieldIntents.current.get(note.id),
+      position: { x: moved.x, y: moved.y },
+    });
+  };
+  const handleNoteControlKeyDown = (
+    note: Sticky,
+    event: React.KeyboardEvent<HTMLButtonElement>,
+  ) => {
+    if (keyboardMoveId === note.id) {
+      handleKeyboardMoveKey(note, event);
+      return;
+    }
+    if (event.key.toLowerCase() === "m") {
+      event.preventDefault();
+      event.stopPropagation();
+      beginKeyboardMove(note);
+      return;
+    }
+    const opensMenu =
+      event.key === "ArrowDown" ||
+      event.key === "ContextMenu" ||
+      (event.key === "F10" && event.shiftKey);
+    if (!opensMenu) return;
+    event.preventDefault();
+    openNoteMenu(
+      note,
+      event.currentTarget.closest<HTMLElement>(".sticky-frame")!,
+      event.currentTarget,
+    );
+  };
   useEffect(() => {
     if (!menuNoteId) return;
     const position = () => {
@@ -912,7 +990,7 @@ function App() {
       return;
     }
     const note = stickies.find((item) => item.id === active.id);
-    if (note && note.version > 0)
+    if (note?.version && note.version > 0)
       enqueueSpatial({ ...note, ...active.position }, false, "position");
   };
   useEffect(() => {
@@ -1501,79 +1579,9 @@ function App() {
                           event.currentTarget,
                         );
                     }}
-                    onKeyDown={(event) => {
-                      if (keyboardMoveId === note.id) {
-                        if (event.key === "Escape") {
-                          event.preventDefault();
-                          const origin = keyboardMoveOrigin.current;
-                          if (origin?.id === note.id) {
-                            updateNote(note.id, { x: origin.x, y: origin.y });
-                            const intents =
-                              fieldIntents.current.get(note.id) ?? {};
-                            if (origin.previousPositionIntent)
-                              intents.position = origin.previousPositionIntent;
-                            else delete intents.position;
-                            if (hasFieldIntent(intents))
-                              fieldIntents.current.set(note.id, intents);
-                            else fieldIntents.current.delete(note.id);
-                          }
-                          setKeyboardMoveId(null);
-                          keyboardMoveOrigin.current = null;
-                          return;
-                        }
-                        if (event.key === "Enter" || event.code === "Space") {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          setKeyboardMoveId(null);
-                          keyboardMoveOrigin.current = null;
-                          if (note.version > 0)
-                            enqueueSpatial(note, false, "position");
-                          return;
-                        }
-                        const step = event.shiftKey ? 1 : 10;
-                        const movement: Record<string, [number, number]> = {
-                          ArrowLeft: [-step, 0],
-                          ArrowRight: [step, 0],
-                          ArrowUp: [0, -step],
-                          ArrowDown: [0, step],
-                        };
-                        const delta = movement[event.key];
-                        if (!delta) return;
-                        event.preventDefault();
-                        const moved = {
-                          ...note,
-                          x: note.x + delta[0],
-                          y: note.y + delta[1],
-                        };
-                        updateNote(note.id, moved);
-                        fieldIntents.current.set(note.id, {
-                          ...fieldIntents.current.get(note.id),
-                          position: { x: moved.x, y: moved.y },
-                        });
-                        return;
-                      }
-                      if (event.key.toLowerCase() === "m") {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        beginKeyboardMove(note);
-                        return;
-                      }
-                      if (
-                        event.key === "ArrowDown" ||
-                        event.key === "ContextMenu" ||
-                        (event.key === "F10" && event.shiftKey)
-                      ) {
-                        event.preventDefault();
-                        openNoteMenu(
-                          note,
-                          event.currentTarget.closest<HTMLElement>(
-                            ".sticky-frame",
-                          )!,
-                          event.currentTarget,
-                        );
-                        return;
-                      }
-                    }}
+                    onKeyDown={(event) =>
+                      handleNoteControlKeyDown(note, event)
+                    }
                   >
                     <span aria-hidden="true">⋮</span>
                   </button>

@@ -133,6 +133,7 @@ export function StickyMenu({
     <div
       ref={menu}
       role="menu"
+      tabIndex={-1}
       aria-label="Sticky actions"
       className="sticky-menu"
       onKeyDown={keyDown}
@@ -144,7 +145,8 @@ export function StickyMenu({
       <button type="button" role="menuitem" tabIndex={-1} onClick={onMove}>
         Move note
       </button>
-      <div role="group" aria-label="Note colour" className="menu-colors">
+      <fieldset className="menu-colors">
+        <legend className="sr-only">Note colour</legend>
         {colors.map((value) => (
           <button
             key={value}
@@ -160,7 +162,7 @@ export function StickyMenu({
             {value}
           </button>
         ))}
-      </div>
+      </fieldset>
       {bottomSheet && (
         <button
           type="button"

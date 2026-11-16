@@ -44,6 +44,10 @@ function menu(anchor = { left: 1000, top: 1000 }, right = 320) {
 test("measured menu clamps right and bottom and keeps native menu semantics", () => {
   const actions = menu();
   const element = screen.getByRole("menu");
+  expect(element.tabIndex).toBe(-1);
+  expect(
+    screen.getByRole("group", { name: "Note colour" }).tagName,
+  ).toBe("FIELDSET");
   expect(element.style.left).toBe("88px");
   expect(element.style.top).toBe("135px");
   const edit = screen.getByRole("menuitem", { name: "Edit note" });
