@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { createPortal } from "react-dom";
+import { StickyMenu } from "./sticky-menu.js";
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/500.css";
 import "@fontsource/inter/600.css";
@@ -67,14 +67,7 @@ const invitationLabel = (value: string) =>
         .split("_")
         .map((part) => part[0]!.toUpperCase() + part.slice(1))
         .join(" ");
-const STICKY_COLORS: ReadonlyArray<{ name: StickyColor; label: string }> = [
-  { name: "yellow", label: "Yellow" },
-  { name: "pink", label: "Pink" },
-  { name: "blue", label: "Blue" },
-  { name: "green", label: "Green" },
-  { name: "orange", label: "Orange" },
-  { name: "purple", label: "Purple" },
-];
+
 function mergeCommittedSticky(
   current: Sticky[],
   committed: Sticky,
@@ -189,6 +182,9 @@ function ActionIcon({ name = "arrow" }: Readonly<{ name?: ActionIconName }>) {
     </svg>
   );
 }
+function isOwnScreenViewport() {
+  return innerWidth <= 599 || (innerWidth <= 900 && innerHeight <= 500);
+}
 function App() {
   const [mode, setMode] = useState<"login" | "bootstrap" | "invite" | "board">(
     () => (location.pathname === "/bootstrap" ? "bootstrap" : "login"),
@@ -206,7 +202,9 @@ function App() {
     "member",
   );
   const [deliveryAvailable, setDeliveryAvailable] = useState(false);
-  const [deliveryTransport, setDeliveryTransport] = useState<"local_capture" | "smtp">("local_capture");
+  const [deliveryTransport, setDeliveryTransport] = useState<
+    "local_capture" | "smtp"
+  >("local_capture");
   const [inviteOpen, setInviteOpen] = useState(false);
   const [managementOpen, setManagementOpen] = useState(false);
   const [members, setMembers] = useState<MemberRow[]>([]);
@@ -232,12 +230,29 @@ function App() {
   const view = useRef({ zoom, pan });
   view.current = { zoom, pan };
   const [draft, setDraft] = useState("");
-  const [colorPickerId, setColorPickerId] = useState<string | null>(null);
-  const [colorPickerPosition, setColorPickerPosition] = useState<{
+  const [menuNoteId, setMenuNoteId] = useState<string | null>(null);
+  const [menuAnchor, setMenuAnchor] = useState({ top: 0, left: 0 });
+  const [keyboardMoveId, setKeyboardMoveId] = useState<string | null>(null);
+  const keyboardMoveOrigin = useRef<{
     id: string;
-    top: number;
-    left: number;
+    x: number;
+    y: number;
+    previousPositionIntent: { x: number; y: number } | undefined;
   } | null>(null);
+  const menuInvoker = useRef<HTMLElement | null>(null);
+  const menuFocusRestore = useRef<number | null>(null);
+  const menuInteraction = useRef(0);
+  const pointerMenuAnchor = useRef(false);
+  const suppressClick = useRef<string | null>(null);
+  const [narrowViewport, setNarrowViewport] = useState(isOwnScreenViewport);
+  const [shortViewport, setShortViewport] = useState(
+    () => (window.visualViewport?.height ?? window.innerHeight) <= 360,
+  );
+  useEffect(() => {
+    const resize = () => setNarrowViewport(isOwnScreenViewport());
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
+  }, []);
   const [mobileEditor, setMobileEditor] = useState<{
     note: Sticky;
     draft: string;
@@ -274,6 +289,8 @@ function App() {
       for (const timer of autosaves.current.values())
         window.clearTimeout(timer);
       autosaves.current.clear();
+      if (menuFocusRestore.current !== null)
+        cancelAnimationFrame(menuFocusRestore.current);
     };
   }, []);
   const drag = useRef<{
@@ -282,6 +299,12 @@ function App() {
     clientY: number;
     x: number;
     y: number;
+    moved: boolean;
+    pointerId: number;
+    capture: HTMLElement;
+    focusTarget: HTMLTextAreaElement | null;
+    position: { x: number; y: number };
+    previousPositionIntent: { x: number; y: number } | undefined;
   } | null>(null);
   const hand = useRef<{
     clientX: number;
@@ -308,6 +331,7 @@ function App() {
     if (!inviteOpen && !mobileEditor) return;
     const viewport = window.visualViewport;
     const updateViewport = () => {
+      setShortViewport((viewport?.height ?? window.innerHeight) <= 360);
       document.documentElement.style.setProperty(
         "--visual-viewport-height",
         `${viewport?.height ?? window.innerHeight}px`,
@@ -373,7 +397,9 @@ function App() {
         setMembers(body.members ?? []);
         setInvitations((body.invitations ?? []).map(invitationRow));
         setDeliveryAvailable(body.deliveryAvailable === true);
-        setDeliveryTransport(body.deliveryTransport === "smtp" ? "smtp" : "local_capture");
+        setDeliveryTransport(
+          body.deliveryTransport === "smtp" ? "smtp" : "local_capture",
+        );
         setMode("board");
         setStatus("Session restored");
         await load(body.boardId);
@@ -439,7 +465,9 @@ function App() {
     setMembers(current.members ?? []);
     setInvitations((current.invitations ?? []).map(invitationRow));
     setDeliveryAvailable(current.deliveryAvailable === true);
-    setDeliveryTransport(current.deliveryTransport === "smtp" ? "smtp" : "local_capture");
+    setDeliveryTransport(
+      current.deliveryTransport === "smtp" ? "smtp" : "local_capture",
+    );
     setMode("board");
     setStatus("Signed in");
     await load(current.boardId ?? body.boardId);
@@ -560,7 +588,9 @@ function App() {
     setMembers(current.members ?? []);
     setInvitations((current.invitations ?? []).map(invitationRow));
     setDeliveryAvailable(current.deliveryAvailable === true);
-    setDeliveryTransport(current.deliveryTransport === "smtp" ? "smtp" : "local_capture");
+    setDeliveryTransport(
+      current.deliveryTransport === "smtp" ? "smtp" : "local_capture",
+    );
     setMode("board");
     setStatus("Invitation accepted");
     await load(current.boardId);
@@ -595,15 +625,7 @@ function App() {
     if (body.code === "version_conflict" && body.canonical) {
       canonicalConflicts.current.set(note.id, body.canonical);
       setStickies((current) =>
-        current.map((item) =>
-          item.id === note.id
-            ? {
-                ...body.canonical!,
-                text: item.text,
-                version: body.canonical!.version,
-              }
-            : item,
-        ),
+        mergeCommittedSticky(current, body.canonical!, fieldIntents.current),
       );
     }
     setStatus(
@@ -764,47 +786,84 @@ function App() {
     setStickies((current) =>
       current.map((note) => (note.id === id ? { ...note, ...changes } : note)),
     );
-  const positionColorPicker = (id: string, frame: HTMLElement) => {
+  const focusNoteControl = (id: string) => {
+    requestAnimationFrame(() =>
+      document
+        .getElementById(`note-${id}`)
+        ?.querySelector<HTMLButtonElement>(".sticky-kebab")
+        ?.focus(),
+    );
+  };
+  const beginKeyboardMove = (note: Sticky) => {
+    setMenuNoteId(null);
+    keyboardMoveOrigin.current = {
+      id: note.id,
+      x: note.x,
+      y: note.y,
+      previousPositionIntent: fieldIntents.current.get(note.id)?.position,
+    };
+    setKeyboardMoveId(note.id);
+    focusNoteControl(note.id);
+    setStatus(
+      "Move mode: arrows preview; Enter or Space places; Escape cancels.",
+    );
+  };
+  const closeNoteMenu = (restore: boolean) => {
+    setMenuNoteId(null);
+    const invoker = menuInvoker.current;
+    menuInvoker.current = null;
+    if (menuFocusRestore.current !== null)
+      cancelAnimationFrame(menuFocusRestore.current);
+    menuFocusRestore.current = null;
+    if (restore) {
+      const interaction = menuInteraction.current;
+      menuFocusRestore.current = requestAnimationFrame(() => {
+        menuFocusRestore.current = null;
+        if (menuInteraction.current === interaction) invoker?.focus();
+      });
+    }
+  };
+  const openNoteMenu = (
+    note: Sticky,
+    frame: HTMLElement,
+    invoker: HTMLElement,
+    pointer?: { left: number; top: number },
+  ) => {
+    menuInteraction.current += 1;
+    if (menuFocusRestore.current !== null)
+      cancelAnimationFrame(menuFocusRestore.current);
+    menuFocusRestore.current = null;
+    setSelectedNoteId(note.id);
+    setSticky(note);
+    setKeyboardMoveId(null);
+    keyboardMoveOrigin.current = null;
+    menuInvoker.current = invoker;
+    pointerMenuAnchor.current = Boolean(pointer);
     const rect = frame.getBoundingClientRect();
-    const isNarrowViewport = innerWidth <= 599;
-    const paletteHalfWidth = isNarrowViewport
-      ? Math.min(94, Math.max(49, innerWidth / 2 - 12))
-      : Math.min(203, Math.max(49, innerWidth / 2 - 12));
-    const paletteHeight = isNarrowViewport ? 132 : 76;
-    const triggerHeight = 44;
-    const toolbarGap = 12;
-    const topEdge = 12;
-    setColorPickerPosition({
-      id,
-      top:
-        rect.top >= paletteHeight + triggerHeight + toolbarGap + topEdge
-          ? rect.top - triggerHeight - toolbarGap
-          : Math.min(
-              rect.bottom + toolbarGap,
-              innerHeight - triggerHeight - topEdge,
-            ),
-      left: Math.min(
-        Math.max(rect.left + rect.width / 2, paletteHalfWidth + 12),
-        innerWidth - paletteHalfWidth - 12,
-      ),
-    });
+    setMenuAnchor(
+      pointer ?? { left: rect.right - 44, top: rect.top + 44 },
+    );
+    setMenuNoteId(note.id);
   };
   useEffect(() => {
-    if (!selectedNoteId) return;
-    const updatePosition = () => {
-      const frame = document.getElementById(`note-${selectedNoteId}`);
-      if (frame) positionColorPicker(selectedNoteId, frame);
+    if (!menuNoteId) return;
+    const position = () => {
+      if (pointerMenuAnchor.current) return;
+      const rect = document
+        .getElementById(`note-${menuNoteId}`)
+        ?.getBoundingClientRect();
+      if (rect) setMenuAnchor({ left: rect.right - 44, top: rect.top + 44 });
     };
-    updatePosition();
-    window.addEventListener("resize", updatePosition);
-    window.visualViewport?.addEventListener("resize", updatePosition);
-    window.visualViewport?.addEventListener("scroll", updatePosition);
+    position();
+    window.addEventListener("resize", position);
+    window.visualViewport?.addEventListener("resize", position);
+    window.visualViewport?.addEventListener("scroll", position);
     return () => {
-      window.removeEventListener("resize", updatePosition);
-      window.visualViewport?.removeEventListener("resize", updatePosition);
-      window.visualViewport?.removeEventListener("scroll", updatePosition);
+      window.removeEventListener("resize", position);
+      window.visualViewport?.removeEventListener("resize", position);
+      window.visualViewport?.removeEventListener("scroll", position);
     };
-  }, [selectedNoteId, pan, zoom]);
+  }, [menuNoteId, pan, zoom, inviteOpen]);
   const dragMove = (event: React.PointerEvent<HTMLDivElement>) => {
     if (hand.current) {
       setPan({
@@ -813,19 +872,63 @@ function App() {
       });
       return;
     }
-    if (!drag.current) return;
-    updateNote(drag.current.id, {
-      x: drag.current.x + (event.clientX - drag.current.clientX) / zoom,
-      y: drag.current.y + (event.clientY - drag.current.clientY) / zoom,
+    const active = drag.current;
+    if (!active || event.pointerId !== active.pointerId) return;
+    const dx = event.clientX - active.clientX;
+    const dy = event.clientY - active.clientY;
+    if (!active.moved && Math.hypot(dx, dy) < 4) return;
+    event.preventDefault();
+    if (!active.moved && document.activeElement === active.focusTarget)
+      active.focusTarget?.blur();
+    active.moved = true;
+    suppressClick.current = active.id;
+    active.capture.setPointerCapture?.(active.pointerId);
+    active.position = {
+      x: Math.round((active.x + dx / zoom) * 4) / 4,
+      y: Math.round((active.y + dy / zoom) * 4) / 4,
+    };
+    fieldIntents.current.set(active.id, {
+      ...fieldIntents.current.get(active.id),
+      position: active.position,
     });
+    updateNote(active.id, active.position);
   };
-  const dragEnd = () => {
+  const dragEnd = (event: React.PointerEvent<HTMLDivElement>) => {
     hand.current = null;
-    if (!drag.current) return;
-    const note = stickies.find((item) => item.id === drag.current?.id);
+    const active = drag.current;
+    if (!active || event.pointerId !== active.pointerId) return;
     drag.current = null;
-    if (note) enqueueSpatial(note, false, "position");
+    if (active.capture.hasPointerCapture?.(active.pointerId))
+      active.capture.releasePointerCapture(active.pointerId);
+    if (!active.moved) return;
+    if (event.type === "pointercancel") {
+      const intents = fieldIntents.current.get(active.id) ?? {};
+      if (active.previousPositionIntent)
+        intents.position = active.previousPositionIntent;
+      else delete intents.position;
+      if (hasFieldIntent(intents)) fieldIntents.current.set(active.id, intents);
+      else fieldIntents.current.delete(active.id);
+      updateNote(active.id, { x: active.x, y: active.y });
+      return;
+    }
+    const note = stickies.find((item) => item.id === active.id);
+    if (note && note.version > 0)
+      enqueueSpatial({ ...note, ...active.position }, false, "position");
   };
+  useEffect(() => {
+    const clearReleasedGesture = (event: PointerEvent) => {
+      const active = drag.current;
+      if (!active || event.pointerId !== active.pointerId || active.moved)
+        return;
+      drag.current = null;
+    };
+    window.addEventListener("pointerup", clearReleasedGesture);
+    window.addEventListener("pointercancel", clearReleasedGesture);
+    return () => {
+      window.removeEventListener("pointerup", clearReleasedGesture);
+      window.removeEventListener("pointercancel", clearReleasedGesture);
+    };
+  }, []);
   useEffect(() => {
     if (mode !== "board") return;
     const shortcut = (event: KeyboardEvent) => {
@@ -887,8 +990,14 @@ function App() {
     const stickyId = event.currentTarget.dataset.stickyId!;
     const canonical = canonicalConflicts.current.get(stickyId);
     const local = stickies.find((item) => item.id === stickyId);
-    if (canonical && local)
-      enqueueSpatial({ ...local, version: canonical.version }, false, "text");
+    if (canonical && local) {
+      const pending = fieldIntents.current.get(stickyId);
+      const retry = { ...local, version: canonical.version };
+      if (pending?.position) enqueueSpatial(retry, false, "position");
+      if (pending?.color) enqueueSpatial(retry, false, "color");
+      if (pending?.text !== undefined || !pending)
+        enqueueSpatial(retry, false, "text");
+    }
   };
   const discardConflictedDraft = (
     event: React.MouseEvent<HTMLButtonElement>,
@@ -907,10 +1016,9 @@ function App() {
   const composerInvitations = invitations.filter((row) =>
     composerInvitationIds.includes(row.id),
   );
-  const ownScreenOpen =
-    window.innerWidth <= 599 && (mobileEditor !== null || inviteOpen);
+  const ownScreenOpen = narrowViewport && (mobileEditor !== null || inviteOpen);
   const trapOwnScreenFocus = (event: React.KeyboardEvent<HTMLElement>) => {
-    if (event.key !== "Tab") return;
+    if (!narrowViewport || event.key !== "Tab") return;
     const focusable = Array.from(
       event.currentTarget.querySelectorAll<HTMLElement>(
         'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
@@ -1193,7 +1301,7 @@ function App() {
       )}
       {mode === "board" && (
         <section
-          className={`board-shell${ownScreenOpen ? " has-own-screen" : ""}`}
+          className={`board-shell${ownScreenOpen ? " has-own-screen" : ""}${inviteOpen ? " has-invitation-drawer" : ""}`}
           aria-labelledby="board-title"
         >
           <output className="sr-only" aria-live="polite">
@@ -1276,26 +1384,72 @@ function App() {
               });
             }}
             onPointerDown={(event) => {
-              const frame = (event.target as HTMLElement).closest<HTMLElement>(
-                ".sticky-frame",
-              );
-              const note = frame
-                ? stickies.find((item) => item.id === frame.dataset.noteId)
-                : undefined;
-              if (frame && note) {
-                setSelectedNoteId(note.id);
-                setSticky(note);
-                positionColorPicker(note.id, frame);
-              } else {
-                placeSticky(event);
+              const target = event.target as HTMLElement;
+              if (event.button !== 0 && event.button !== undefined) {
+                // Native secondary-button focus must not open an editor before
+                // the contextmenu event (especially on the phone own-screen).
+                if (target.closest(".sticky-frame")) event.preventDefault();
+                return;
               }
-              if (tool === "hand" || spaceHeld.current)
+              if (target.closest("button, .conflict-actions")) return;
+              suppressClick.current = null;
+              setMenuNoteId(null);
+              if (tool === "hand" || spaceHeld.current) {
+                event.preventDefault();
                 hand.current = {
                   clientX: event.clientX,
                   clientY: event.clientY,
                   x: pan.x,
                   y: pan.y,
                 };
+                event.currentTarget.setPointerCapture?.(event.pointerId);
+                return;
+              }
+              const frame = target.closest<HTMLElement>(".sticky-frame");
+              const note = frame
+                ? stickies.find((item) => item.id === frame.dataset.noteId)
+                : undefined;
+              if (!frame || !note) {
+                placeSticky(event);
+                return;
+              }
+              setSelectedNoteId(note.id);
+              setSticky(note);
+              // Once editing, preserve the textarea's native caret and drag
+              // selection. An initially unfocused textarea may still become a
+              // note drag after the threshold without suppressing click-caret.
+              if (
+                target instanceof HTMLTextAreaElement &&
+                document.activeElement === target
+              )
+                return;
+              drag.current = {
+                id: note.id,
+                clientX: event.clientX,
+                clientY: event.clientY,
+                x: note.x,
+                y: note.y,
+                moved: false,
+                pointerId: event.pointerId,
+                capture: event.currentTarget,
+                focusTarget:
+                  target instanceof HTMLTextAreaElement ? target : null,
+                position: { x: note.x, y: note.y },
+                previousPositionIntent: fieldIntents.current.get(note.id)
+                  ?.position,
+              };
+            }}
+            onClickCapture={(event) => {
+              const target = event.target as HTMLElement;
+              const frame = target.closest<HTMLElement>(".sticky-frame");
+              if (
+                suppressClick.current &&
+                frame?.dataset.noteId === suppressClick.current
+              ) {
+                event.preventDefault();
+                event.stopPropagation();
+                suppressClick.current = null;
+              }
             }}
             onPointerMove={dragMove}
             onPointerUp={dragEnd}
@@ -1316,43 +1470,112 @@ function App() {
                   aria-current={selectedNoteId === note.id ? "true" : undefined}
                   className={`sticky-frame sticky-${note.color}`}
                   style={{ transform: `translate(${note.x}px, ${note.y}px)` }}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openNoteMenu(note, event.currentTarget, event.target as HTMLElement, {
+                      left: event.clientX,
+                      top: event.clientY,
+                    });
+                  }}
                 >
                   <button
                     type="button"
-                    className="sticky-drag"
-                    aria-label={`Move sticky ${note.text.slice(0, 30)}`}
-                    onPointerDown={(event) => {
-                      event.stopPropagation();
-                      drag.current = {
-                        id: note.id,
-                        clientX: event.clientX,
-                        clientY: event.clientY,
-                        x: note.x,
-                        y: note.y,
-                      };
+                    className="sticky-kebab"
+                    aria-label={`Sticky actions ${note.text.slice(0, 30)}`}
+                    aria-haspopup="menu"
+                    aria-expanded={menuNoteId === note.id}
+                    aria-describedby={
+                      keyboardMoveId === note.id
+                        ? "sticky-move-help"
+                        : undefined
+                    }
+                    onClick={(event) => {
+                      if (menuNoteId === note.id) closeNoteMenu(true);
+                      else
+                        openNoteMenu(
+                          note,
+                          event.currentTarget.closest<HTMLElement>(
+                            ".sticky-frame",
+                          )!,
+                          event.currentTarget,
+                        );
                     }}
                     onKeyDown={(event) => {
-                      const step = event.shiftKey ? 1 : 10;
-                      const movement: Record<string, [number, number]> = {
-                        ArrowLeft: [-step, 0],
-                        ArrowRight: [step, 0],
-                        ArrowUp: [0, -step],
-                        ArrowDown: [0, step],
-                      };
-                      const delta = movement[event.key];
-                      if (!delta) return;
-                      event.preventDefault();
-                      const moved = {
-                        ...note,
-                        x: note.x + delta[0]!,
-                        y: note.y + delta[1]!,
-                      };
-                      updateNote(note.id, moved);
-                      if (note.version > 0)
-                        enqueueSpatial(moved, false, "position");
+                      if (keyboardMoveId === note.id) {
+                        if (event.key === "Escape") {
+                          event.preventDefault();
+                          const origin = keyboardMoveOrigin.current;
+                          if (origin?.id === note.id) {
+                            updateNote(note.id, { x: origin.x, y: origin.y });
+                            const intents =
+                              fieldIntents.current.get(note.id) ?? {};
+                            if (origin.previousPositionIntent)
+                              intents.position = origin.previousPositionIntent;
+                            else delete intents.position;
+                            if (hasFieldIntent(intents))
+                              fieldIntents.current.set(note.id, intents);
+                            else fieldIntents.current.delete(note.id);
+                          }
+                          setKeyboardMoveId(null);
+                          keyboardMoveOrigin.current = null;
+                          return;
+                        }
+                        if (event.key === "Enter" || event.code === "Space") {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          setKeyboardMoveId(null);
+                          keyboardMoveOrigin.current = null;
+                          if (note.version > 0)
+                            enqueueSpatial(note, false, "position");
+                          return;
+                        }
+                        const step = event.shiftKey ? 1 : 10;
+                        const movement: Record<string, [number, number]> = {
+                          ArrowLeft: [-step, 0],
+                          ArrowRight: [step, 0],
+                          ArrowUp: [0, -step],
+                          ArrowDown: [0, step],
+                        };
+                        const delta = movement[event.key];
+                        if (!delta) return;
+                        event.preventDefault();
+                        const moved = {
+                          ...note,
+                          x: note.x + delta[0],
+                          y: note.y + delta[1],
+                        };
+                        updateNote(note.id, moved);
+                        fieldIntents.current.set(note.id, {
+                          ...fieldIntents.current.get(note.id),
+                          position: { x: moved.x, y: moved.y },
+                        });
+                        return;
+                      }
+                      if (event.key.toLowerCase() === "m") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        beginKeyboardMove(note);
+                        return;
+                      }
+                      if (
+                        event.key === "ArrowDown" ||
+                        event.key === "ContextMenu" ||
+                        (event.key === "F10" && event.shiftKey)
+                      ) {
+                        event.preventDefault();
+                        openNoteMenu(
+                          note,
+                          event.currentTarget.closest<HTMLElement>(
+                            ".sticky-frame",
+                          )!,
+                          event.currentTarget,
+                        );
+                        return;
+                      }
                     }}
                   >
-                    <span aria-hidden="true">⋮⋮</span>
+                    <span aria-hidden="true">⋮</span>
                   </button>
                   <textarea
                     autoFocus={note.version === 0}
@@ -1363,17 +1586,24 @@ function App() {
                     aria-label={`Sticky note ${note.text.slice(0, 30)}`}
                     className="spatial-sticky"
                     value={note.text}
-                    onFocus={(event) => {
+                    onClick={(event) => {
+                      if (tool !== "select" || spaceHeld.current) return;
+                      if (narrowViewport) {
+                        setSelectedNoteId(note.id);
+                        setSticky(note);
+                        setDraft(note.text);
+                        setMobileEditor({ note, draft: note.text });
+                        return;
+                      }
+                      // Native pointer focus places the caret at the clicked
+                      // character. Keyboard/programmatic clicks still focus.
+                      if (document.activeElement !== event.currentTarget)
+                        event.currentTarget.focus();
+                    }}
+                    onFocus={() => {
                       setSelectedNoteId(note.id);
                       setSticky(note);
                       setDraft(note.text);
-                      const frame =
-                        event.currentTarget.closest<HTMLElement>(
-                          ".sticky-frame",
-                        );
-                      if (frame) positionColorPicker(note.id, frame);
-                      if (window.innerWidth <= 599)
-                        setMobileEditor({ note, draft: note.text });
                     }}
                     onChange={(event) => {
                       const text = event.target.value;
@@ -1401,7 +1631,7 @@ function App() {
                         );
                     }}
                     onBlur={(event) => {
-                      if (window.innerWidth <= 599) return;
+                      if (narrowViewport) return;
                       window.clearTimeout(autosaves.current.get(note.id));
                       autosaves.current.delete(note.id);
                       const changed = {
@@ -1415,97 +1645,24 @@ function App() {
                         enqueueSpatial(changed, note.version === 0);
                     }}
                     onKeyDown={(event) => {
+                      if (
+                        event.key === "ContextMenu" ||
+                        (event.key === "F10" && event.shiftKey)
+                      ) {
+                        event.preventDefault();
+                        openNoteMenu(
+                          note,
+                          event.currentTarget.closest<HTMLElement>(
+                            ".sticky-frame",
+                          )!,
+                          event.currentTarget,
+                        );
+                      }
                       if (event.key === "Escape") {
                         event.currentTarget.blur();
                       }
                     }}
                   />
-                  {selectedNoteId === note.id &&
-                    !ownScreenOpen &&
-                    createPortal(
-                      <div
-                        className="color-picker"
-                        style={
-                          colorPickerPosition?.id === note.id
-                            ? {
-                                position: "fixed",
-                                top: colorPickerPosition.top,
-                                bottom: "auto",
-                                left: colorPickerPosition.left,
-                              }
-                            : undefined
-                        }
-                      >
-                        <button
-                          type="button"
-                          className="color-trigger"
-                          aria-label="Choose sticky color"
-                          title="Choose sticky color"
-                          aria-expanded={colorPickerId === note.id}
-                          onKeyDown={(event) => {
-                            if (event.key === "Escape") {
-                              setColorPickerId(null);
-                              event.currentTarget.focus();
-                            }
-                          }}
-                          onClick={() => {
-                            const frame = document.getElementById(
-                              `note-${note.id}`,
-                            );
-                            if (frame) positionColorPicker(note.id, frame);
-                            setColorPickerId((id) =>
-                              id === note.id ? null : note.id,
-                            );
-                          }}
-                        >
-                          <span
-                            className={`current-colour swatch-${note.color}`}
-                            aria-hidden="true"
-                          />
-                          <span>Colour</span>
-                        </button>
-                        {colorPickerId === note.id && (
-                          <fieldset
-                            className="color-palette"
-                            aria-label="Sticky color"
-                          >
-                            <legend>Note colour</legend>
-                            {STICKY_COLORS.map((choice) => (
-                              <button
-                                key={choice.name}
-                                type="button"
-                                className={`color-swatch swatch-${choice.name}`}
-                                aria-label={`${choice.label} sticky color`}
-                                aria-pressed={note.color === choice.name}
-                                title={choice.label}
-                                onKeyDown={(event) => {
-                                  if (event.key !== "Escape") return;
-                                  setColorPickerId(null);
-                                  event.currentTarget
-                                    .closest(".color-picker")
-                                    ?.querySelector<HTMLButtonElement>(
-                                      ".color-trigger",
-                                    )
-                                    ?.focus();
-                                }}
-                                onClick={() => {
-                                  const changed = {
-                                    ...note,
-                                    color: choice.name,
-                                  };
-                                  updateNote(note.id, changed);
-                                  if (note.version > 0)
-                                    enqueueSpatial(changed, false, "color");
-                                }}
-                              >
-                                <span>{choice.label.toLowerCase()}</span>
-                              </button>
-                            ))}
-                          </fieldset>
-                        )}
-                      </div>,
-                      document.body,
-                    )}
                   {note.version === 0 && (
                     <button
                       type="button"
@@ -1545,6 +1702,51 @@ function App() {
               ))}
             </div>
           </div>
+          <p className="sr-only" id="sticky-move-help">
+            Move mode: arrow keys move ten units; Shift plus arrow moves one.
+            Escape exits. Plain press and move anywhere on a note drags; click
+            edits. Use Shift-drag or keyboard selection to select text while
+            editing.
+          </p>
+          {menuNoteId &&
+            !ownScreenOpen &&
+            (() => {
+              const note = stickies.find((item) => item.id === menuNoteId);
+              if (!note) return null;
+              return (
+                <StickyMenu
+                  anchor={menuAnchor}
+                  right={
+                    canvasRef.current?.getBoundingClientRect().right ||
+                    innerWidth
+                  }
+                  color={note.color}
+                  onClose={closeNoteMenu}
+                  onEdit={() => {
+                    setMenuNoteId(null);
+                    if (narrowViewport)
+                      setMobileEditor({ note, draft: note.text });
+                    else
+                      requestAnimationFrame(() =>
+                        document
+                          .getElementById(`note-${note.id}`)
+                          ?.querySelector<HTMLTextAreaElement>("textarea")
+                          ?.focus(),
+                      );
+                  }}
+                  onMove={() => {
+                    beginKeyboardMove(note);
+                  }}
+                  onColor={(color) => {
+                    const changed = { ...note, color };
+                    updateNote(note.id, changed);
+                    if (note.version > 0)
+                      enqueueSpatial(changed, false, "color");
+                    closeNoteMenu(true);
+                  }}
+                />
+              );
+            })()}
           {mobileEditor && (
             <dialog
               open
@@ -1683,7 +1885,8 @@ function App() {
                   Math.max(
                     0.1,
                     Math.min(
-                      (innerWidth - 160) / (maxX - minX),
+                      ((canvasRef.current?.clientWidth ?? innerWidth) - 160) /
+                        (maxX - minX),
                       (innerHeight - 120) / (maxY - minY),
                     ),
                   ),
@@ -1736,8 +1939,9 @@ function App() {
               {inviteOpen && (
                 <dialog
                   id="invite-panel"
+                  className={shortViewport ? "is-short-viewport" : undefined}
                   open
-                  aria-modal="true"
+                  aria-modal={narrowViewport}
                   aria-labelledby="invite-panel-title"
                   onKeyDown={trapOwnScreenFocus}
                 >
@@ -1762,8 +1966,9 @@ function App() {
                       </button>
                       <h3 id="invite-panel-title">Invite to Team board</h3>
                     </header>
-                    <p>Add recipients, then send eligible invitations.</p>
-                    <div className="composer-controls">
+                    <div className="composer-scroll">
+                      <p>Add recipients, then send eligible invitations.</p>
+                      <div className="composer-controls">
                       <label>
                         <span>Email</span>
                         <input
@@ -1816,11 +2021,11 @@ function App() {
                       >
                         Add
                       </button>
-                    </div>
-                    <p className="composer-count">
-                      Recipients · {composerInvitations.length}
-                    </p>
-                    <div className="composer-recipients">
+                      </div>
+                      <p className="composer-count">
+                        Recipients · {composerInvitations.length}
+                      </p>
+                      <div className="composer-recipients">
                       {composerInvitations.map((row) => (
                         <article className="composer-recipient" key={row.id}>
                           <span>{row.email}</span>
@@ -1847,39 +2052,40 @@ function App() {
                           </small>
                         </article>
                       ))}
+                      </div>
                     </div>
-                    <p className="composer-transport-hint">
-                      {
-                        "Sends Unsent or Failed only. Sent means mail-server accepted, not inbox delivery."
-                      }
-                    </p>
-                    <button
-                      type="button"
-                      className="composer-send"
-                      disabled={
-                        composerSending ||
-                        !deliveryAvailable ||
-                        composerInvitationIds.length === 0
-                      }
-                      onClick={() => void sendComposerInvitations()}
-                    >
-                      {composerSending ? "Sending…" : "Send invitation"}
-                    </button>
-                    <p className="composer-enter-hint">
-                      {
-                        "Enter in Email adds only. Successful Add clears Email and resets Member."
-                      }
-                    </p>
-                    <button
-                      type="button"
-                      className="composer-management-access composer-secondary"
-                      onClick={() => {
-                        setInviteOpen(false);
-                        setManagementOpen(true);
-                      }}
-                    >
-                      Manage members and invitations
-                    </button>
+                    <footer className="composer-footer">
+                      <p className="composer-transport-hint">
+                        {deliveryTransport === "smtp"
+                          ? "Sends Unsent or Failed only. Sent means mail-server accepted, not inbox delivery."
+                          : "Local capture only — no inbox email is sent. Copy a link to share it."}
+                      </p>
+                      <button
+                        type="button"
+                        className="composer-send"
+                        disabled={
+                          composerSending ||
+                          !deliveryAvailable ||
+                          composerInvitationIds.length === 0
+                        }
+                        onClick={() => void sendComposerInvitations()}
+                      >
+                        {composerSending ? "Sending…" : "Send invitation"}
+                      </button>
+                      <p className="composer-enter-hint">
+                        Enter in Email adds a recipient; it never sends.
+                      </p>
+                      <button
+                        type="button"
+                        className="composer-management-access composer-secondary"
+                        onClick={() => {
+                          setInviteOpen(false);
+                          setManagementOpen(true);
+                        }}
+                      >
+                        Manage members and invitations
+                      </button>
+                    </footer>
                   </form>
                 </dialog>
               )}
@@ -1940,7 +2146,8 @@ function App() {
     </main>
   );
 }
-createRoot(document.getElementById("root")!).render(
+export const appRoot = createRoot(document.getElementById("root")!);
+appRoot.render(
   <React.StrictMode>
     <App />
   </React.StrictMode>,

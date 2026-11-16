@@ -1,8 +1,12 @@
 // @vitest-environment jsdom
 import { cleanup, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import type { Root } from "react-dom/client";
+
+const mountedRoots: Root[] = [];
 
 afterEach(() => {
+  for (const root of mountedRoots.splice(0)) root.unmount();
   cleanup();
   history.replaceState(null, "", "/");
   document.body.innerHTML = "";
@@ -23,7 +27,7 @@ test("the private owner entry route lands directly on native first-run setup", a
     ),
   );
 
-  await import("../../../src/web/main.js");
+  mountedRoots.push((await import("../../../src/web/main.js")).appRoot);
 
   expect(
     await screen.findByRole("heading", {
