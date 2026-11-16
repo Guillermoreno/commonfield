@@ -1,0 +1,71 @@
+name: PR quality
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+concurrency:
+  group: pr-quality-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  quality:
+    name: Tests, types, lint and coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PR_GATE_REPORT_DIR: /tmp/pr-gate-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.0
+      - name: Install
+        run: |
+          npm install --global --ignore-scripts pnpm@12.18.0
+          pnpm install --frozen-lockfile
+      - name: Trusted worker regression suite
+        run: python3 -m unittest discover -s tools/pr_gate -v
+      - name: Full unit suite and coverage
+        shell: bash
+        run: |
+          mkdir "$PR_GATE_REPORT_DIR"
+          rm -rf coverage
+          python3 tools/pr_gate/gate.py ci-reporter > "$PR_GATE_REPORT_DIR/runtime-reporter.mjs"
+          # Record, do not waive, the original Vitest exit. No threshold override.
+          set +e
+          pnpm exec vitest run --coverage --reporter=default --reporter=json --reporter="$PR_GATE_REPORT_DIR/runtime-reporter.mjs" --outputFile.json="$PR_GATE_REPORT_DIR/tests.json" > "$PR_GATE_REPORT_DIR/stdout" 2> "$PR_GATE_REPORT_DIR/stderr"
+          result=$?
+          set -e
+          printf '%s\n' "$result" > "$PR_GATE_REPORT_DIR/exit"
+          cat "$PR_GATE_REPORT_DIR/stdout"
+          cat "$PR_GATE_REPORT_DIR/stderr" >&2
+      - name: Validate test and coverage results
+        run: python3 tools/pr_gate/gate.py validate-ci "$PR_GATE_REPORT_DIR" coverage/lcov.info
+      - name: Types
+        run: pnpm typecheck
+      - name: Lint
+        run: pnpm lint
+      - name: Bind coverage
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test -s coverage/lcov.info
+          node --input-type=module -e 'import fs from "node:fs"; fs.writeFileSync("coverage/binding.json", JSON.stringify({sha:process.env.CANDIDATE_SHA,repository:process.env.GITHUB_REPOSITORY,run_id:process.env.GITHUB_RUN_ID}));'
+      - name: Upload coverage
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+          path: |
+            coverage/lcov.info
+            coverage/binding.json
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 6
+      - name: Enforce coverage threshold
+        run: test "$(cat "$PR_GATE_REPORT_DIR/exit")" = 0
