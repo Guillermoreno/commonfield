@@ -996,8 +996,8 @@ function App() {
   useEffect(() => {
     const clearReleasedGesture = (event: PointerEvent) => {
       const active = drag.current;
-      if (!active || event.pointerId !== active.pointerId || active.moved)
-        return;
+      if (!active) return;
+      if (event.pointerId !== active.pointerId || active.moved) return;
       drag.current = null;
     };
     window.addEventListener("pointerup", clearReleasedGesture);
