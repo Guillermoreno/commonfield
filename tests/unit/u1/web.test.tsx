@@ -7,8 +7,12 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import type { Root } from "react-dom/client";
+
+const mountedRoots: Root[] = [];
 
 afterEach(async () => {
+  for (const root of mountedRoots.splice(0)) root.unmount();
   cleanup();
   await new Promise<void>((resolve) => setImmediate(resolve));
   vi.restoreAllMocks();
@@ -45,8 +49,10 @@ test("mount-captured fetch uses the native global receiver", async () => {
   };
   vi.stubGlobal("fetch", nativeLikeFetch);
 
-  // @ts-expect-error Vite test query isolates the module's singleton root.
-  await import("../../../src/web/main.js?native-fetch-receiver");
+  mountedRoots.push(
+    // @ts-expect-error Vite test query isolates the module's singleton root.
+    (await import("../../../src/web/main.js?native-fetch-receiver")).appRoot,
+  );
 
   expect(await screen.findByTestId("canvas")).toBeTruthy();
   expect(calls).toBeGreaterThanOrEqual(2);
@@ -100,8 +106,10 @@ test("browser state completes bootstrap, login, save, remote update, and conflic
       });
     }),
   );
-  // @ts-expect-error Vite test query isolates the module's singleton root.
-  await import("../../../src/web/main.js?bootstrap-flow");
+  mountedRoots.push(
+    // @ts-expect-error Vite test query isolates the module's singleton root.
+    (await import("../../../src/web/main.js?bootstrap-flow")).appRoot,
+  );
   fireEvent.click(await screen.findByTestId("show-bootstrap"));
   expect(screen.queryByTestId("email")).toBeNull();
   expect(screen.getByTestId("display-name")).toBeTruthy();
@@ -221,8 +229,10 @@ test("board exposes spatial tools, one-shot sticky placement, and zoom controls"
       );
     }),
   );
-  // @ts-expect-error Vite test query isolates the module's singleton root.
-  await import("../../../src/web/main.js?spatial-tools");
+  mountedRoots.push(
+    // @ts-expect-error Vite test query isolates the module's singleton root.
+    (await import("../../../src/web/main.js?spatial-tools")).appRoot,
+  );
   expect(
     await screen.findByRole("toolbar", { name: "Board tools" }),
   ).toBeTruthy();
@@ -254,7 +264,8 @@ test("board exposes spatial tools, one-shot sticky placement, and zoom controls"
   expect(
     labelledActions.every(
       (button) =>
-        button.querySelector("svg") || button.classList.contains("sticky-drag"),
+        button.querySelector("svg") ||
+        button.classList.contains("sticky-kebab"),
     ),
   ).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: /Sticky/ }));
@@ -291,14 +302,11 @@ test("board exposes spatial tools, one-shot sticky placement, and zoom controls"
     toJSON: () => ({}),
   });
   fireEvent.pointerDown(edgeNote, { pointerType: "mouse" });
-  fireEvent.click(screen.getByRole("button", { name: "Choose sticky color" }));
-  expect(document.querySelector(".canvas-world .color-picker")).toBeNull();
-  expect(document.querySelector("body > .color-picker")).toBeTruthy();
-  expect(document.querySelector<HTMLElement>(".color-picker")?.style.top).toBe(
-    "220px",
-  );
+  fireEvent.click(edgeNote.querySelector<HTMLButtonElement>(".sticky-kebab")!);
+  expect(document.querySelector(".canvas-world .sticky-menu")).toBeNull();
+  expect(document.querySelector("main > .sticky-menu")).toBeTruthy();
   expect(
-    screen.getByRole("button", { name: "Blue sticky color" }),
+    screen.getByRole("menuitemradio", { name: "Blue sticky color" }),
   ).toBeTruthy();
   expect(canvas.getAttribute("role")).toBe("application");
   expect(edgeNote.hasAttribute("tabindex")).toBe(false);
@@ -311,7 +319,11 @@ test("board exposes spatial tools, one-shot sticky placement, and zoom controls"
   fireEvent.change(draft, { target: { value: "spatial unit note" } });
   fireEvent.blur(draft);
   await waitFor(() => expect(screen.getByText(/Saved version/)).toBeTruthy());
-  const move = screen.getAllByRole("button", { name: /Move sticky/ }).at(-1)!;
+  const move = screen
+    .getAllByRole("button", { name: /Sticky actions/ })
+    .at(-1)!;
+  fireEvent.click(move);
+  fireEvent.click(screen.getByRole("menuitem", { name: "Move note" }));
   fireEvent.keyDown(move, { key: "ArrowRight" });
   fireEvent.keyDown(move, { key: "ArrowDown", shiftKey: true });
   fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
@@ -550,12 +562,14 @@ test("mobile sticky editing is explicit and cancel never sends the draft", async
       return new Response("{}", { status: 404 });
     }),
   );
-  // @ts-expect-error Vite test query isolates the module's singleton root.
-  await import("../../../src/web/main.js?mobile-editor");
+  mountedRoots.push(
+    // @ts-expect-error Vite test query isolates the module's singleton root.
+    (await import("../../../src/web/main.js?mobile-editor")).appRoot,
+  );
   const note = await screen.findByRole("textbox", {
     name: /Sticky note committed/,
   });
-  fireEvent.focus(note);
+  fireEvent.click(note);
   const editor = await screen.findByRole("textbox", {
     name: "Edit sticky note",
   });
@@ -587,7 +601,7 @@ test("mobile sticky editing is explicit and cancel never sends the draft", async
     screen.getByRole("textbox", { name: /Sticky note committed/ }),
   ).toBeTruthy();
 
-  fireEvent.focus(
+  fireEvent.click(
     screen.getByRole("textbox", { name: /Sticky note committed/ }),
   );
   fireEvent.change(
@@ -658,13 +672,16 @@ test.each([false, true])(
     const createResponse = new Promise<Response>((resolve) => {
       resolveCreate = resolve;
     });
-    const mutations: Array<{ method: string; body: Record<string, unknown> }> = [];
+    const mutations: Array<{ method: string; body: Record<string, unknown> }> =
+      [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: string | URL, init?: RequestInit) => {
         const path = String(input);
         if (path === "/api/session")
-          return new Response(JSON.stringify({ boardId: "board", csrf: "csrf" }));
+          return new Response(
+            JSON.stringify({ boardId: "board", csrf: "csrf" }),
+          );
         if (path === "/api/boards/board")
           return new Response(JSON.stringify({ stickies: [] }));
         if (init?.method === "POST" || init?.method === "PATCH") {
@@ -728,11 +745,15 @@ test.each([false, true])(
     const creatorEditor = document.querySelector<HTMLTextAreaElement>(
       "textarea.spatial-sticky",
     )!;
-    expect(document.querySelectorAll("textarea.spatial-sticky")).toHaveLength(1);
+    expect(document.querySelectorAll("textarea.spatial-sticky")).toHaveLength(
+      1,
+    );
     expect(creatorEditor.value).toBe(
       newerDirtyDraft ? "Newer dirty draft" : "Collaborator text",
     );
-    expect(creatorEditor.closest("article")?.className).toContain("sticky-blue");
+    expect(creatorEditor.closest("article")?.className).toContain(
+      "sticky-blue",
+    );
     expect(creatorEditor.closest("article")?.style.transform).toBe(
       "translate(320px, 180px)",
     );
@@ -779,8 +800,10 @@ test("a first-create late acknowledgement remaps queued work to the server ID wi
       return new Response("{}", { status: 404 });
     }),
   );
-  // @ts-expect-error Vite test query isolates the module's singleton root.
-  await import("../../../src/web/main.js?first-create-remap");
+  mountedRoots.push(
+    // @ts-expect-error Vite test query isolates the module's singleton root.
+    (await import("../../../src/web/main.js?first-create-remap")).appRoot,
+  );
   fireEvent.click(await screen.findByRole("button", { name: /Sticky/ }));
   const canvas = screen.getByTestId("canvas");
   vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({
@@ -861,14 +884,22 @@ test("remote text commits merge with local colour and position intents while the
       return new Response("{}", { status: 404 });
     }),
   );
-  // @ts-expect-error Vite test query isolates the module's singleton root.
-  await import("../../../src/web/main.js?remote-field-intents");
+  mountedRoots.push(
+    // @ts-expect-error Vite test query isolates the module's singleton root.
+    (await import("../../../src/web/main.js?remote-field-intents")).appRoot,
+  );
   const editor = await screen.findByRole("textbox", {
     name: /Sticky note Initial/,
   });
   fireEvent.pointerDown(editor, { pointerType: "touch" });
-  fireEvent.click(screen.getByRole("button", { name: "Choose sticky color" }));
-  fireEvent.click(screen.getByRole("button", { name: "Blue sticky color" }));
+  fireEvent.click(
+    editor
+      .closest("article")!
+      .querySelector<HTMLButtonElement>(".sticky-kebab")!,
+  );
+  fireEvent.click(
+    screen.getByRole("menuitemradio", { name: "Blue sticky color" }),
+  );
   await waitFor(() => expect(pending).toHaveLength(1));
   await act(async () =>
     FakeWebSocket.instances.at(-1)!.onmessage?.(
@@ -906,8 +937,14 @@ test("remote text commits merge with local colour and position intents while the
   );
   expect((editor as HTMLTextAreaElement).value).toBe("Remote text");
 
-  const move = screen.getByRole("button", { name: /Move sticky Remote text/ });
+  const move = screen.getByRole("button", {
+    name: /Sticky actions Remote text/,
+  });
+  fireEvent.click(move);
+  fireEvent.click(screen.getByRole("menuitem", { name: "Move note" }));
   fireEvent.keyDown(move, { key: "ArrowRight" });
+  expect(pending).toHaveLength(0);
+  fireEvent.keyDown(move, { key: "Enter" });
   await waitFor(() => expect(pending).toHaveLength(1));
   await act(async () =>
     FakeWebSocket.instances.at(-1)!.onmessage?.(
@@ -1001,8 +1038,10 @@ test("a late save acknowledgement cannot overwrite a newer local draft", async (
       return new Response("{}", { status: 404 });
     }),
   );
-  // @ts-expect-error Vite test query isolates the module's singleton root.
-  await import("../../../src/web/main.js?late-text-ack");
+  mountedRoots.push(
+    // @ts-expect-error Vite test query isolates the module's singleton root.
+    (await import("../../../src/web/main.js?late-text-ack")).appRoot,
+  );
   const editor = await screen.findByRole("textbox", {
     name: /Sticky note Initial/,
   });
@@ -1080,15 +1119,30 @@ test("a late colour acknowledgement cannot overwrite a newer local colour", asyn
       return new Response("{}", { status: 404 });
     }),
   );
-  // @ts-expect-error Vite test query isolates the module's singleton root.
-  await import("../../../src/web/main.js?late-colour-ack");
+  mountedRoots.push(
+    // @ts-expect-error Vite test query isolates the module's singleton root.
+    (await import("../../../src/web/main.js?late-colour-ack")).appRoot,
+  );
   const editor = await screen.findByRole("textbox", {
     name: /Sticky note Initial/,
   });
   fireEvent.pointerDown(editor);
-  fireEvent.click(screen.getByRole("button", { name: "Choose sticky color" }));
-  fireEvent.click(screen.getByRole("button", { name: "Blue sticky color" }));
-  fireEvent.click(screen.getByRole("button", { name: "Green sticky color" }));
+  fireEvent.click(
+    editor
+      .closest("article")!
+      .querySelector<HTMLButtonElement>(".sticky-kebab")!,
+  );
+  fireEvent.click(
+    screen.getByRole("menuitemradio", { name: "Blue sticky color" }),
+  );
+  fireEvent.click(
+    editor
+      .closest("article")!
+      .querySelector<HTMLButtonElement>(".sticky-kebab")!,
+  );
+  fireEvent.click(
+    screen.getByRole("menuitemradio", { name: "Green sticky color" }),
+  );
   resolveBlue(
     new Response(
       JSON.stringify({
@@ -1171,7 +1225,7 @@ test("restores invitation inventory and CSRF, then uses canonical IDs for add, s
     }),
   );
   const invitationModule = "../../../src/web/main.js?invitation-restore";
-  await import(invitationModule);
+  mountedRoots.push((await import(invitationModule)).appRoot);
   await screen.findByText("existing@example.test");
   fireEvent.click(screen.getByRole("button", { name: "Invite a member" }));
   const composer = screen.getByRole("dialog", { name: "Invite to Team board" });

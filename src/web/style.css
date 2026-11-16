@@ -36,6 +36,7 @@ body {
   padding: 2rem;
 }
 .board-shell {
+  --invitation-width: 33.333333vw;
   position: fixed;
   inset: 0;
   overflow: hidden;
@@ -177,6 +178,9 @@ kbd {
   outline-offset: 0;
 }
 .spatial-sticky {
+  /* The textarea is itself a scroll container: touch-action must be set here,
+     not only on the canvas ancestor, to prevent native gesture cancellation. */
+  touch-action: none;
   width: 100%;
   height: 100%;
   min-height: 200px;
@@ -209,94 +213,73 @@ kbd {
 .sticky-purple .spatial-sticky {
   background: #dacfff;
 }
-.color-palette {
-  position: absolute;
-  z-index: 3;
-  left: 0.35rem;
-  bottom: 0.35rem;
-  display: flex;
-  gap: 0.25rem;
-  margin: 0;
-  padding: 0.25rem;
-  border: 0;
-  border-radius: 1rem;
-  background: #fff;
-  box-shadow: 0 1px 5px #10233f33;
-}
-.color-picker {
-  position: absolute;
-  z-index: 4;
-  bottom: calc(100% + 12px);
-  left: 50%;
-  transform: translateX(-50%);
-}
-.color-trigger {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: auto;
-  min-width: 98px;
-  min-height: 44px;
-  padding: 0 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
+/* Viewport-space chrome, intentionally outside the transformed canvas. */
+.sticky-menu {
+  position: fixed;
+  z-index: 25;
+  display: grid;
+  width: 280px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(var(--visual-viewport-height, 100dvh) - 16px);
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
   background: var(--surface);
   box-shadow:
-    0 1px 2px #161b2614,
-    0 4px 12px #161b2612;
+    0 8px 24px -4px rgba(16, 24, 40, 0.14),
+    0 1px 3px rgba(16, 24, 40, 0.08);
 }
-.color-picker .color-palette {
-  bottom: 56px;
-  left: 50%;
-  width: max-content;
-  padding: 12px;
-  border-radius: 14px;
-  transform: translateX(-50%);
-}
-.color-palette legend {
-  float: left;
-  width: 100%;
-  margin-bottom: 8px;
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 16px;
+.sticky-menu button {
+  min-height: 44px;
+  padding: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: white;
+  text-align: left;
   font-weight: 500;
 }
-.color-swatch {
-  position: relative;
-  display: grid;
-  place-items: start center;
-  width: 48px;
-  min-width: 48px;
-  height: 52px;
-  padding: 36px 0 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  font-size: 12px;
-  font-weight: 400;
+.sticky-menu button:hover {
+  background: #eaf1ff;
 }
-.color-swatch::before {
-  position: absolute;
-  top: 0;
-  left: 8px;
+.menu-colors {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  min-width: 0;
+  margin: 0;
+  padding: 8px 0 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.menu-color {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  min-width: 0;
+  font-size: 11px;
+  text-transform: capitalize;
+}
+.menu-color span {
   width: 32px;
   height: 32px;
+  flex: none;
+  background: var(--swatch);
   border: 1px solid var(--border-strong);
   border-radius: 50%;
-  background: var(--swatch);
-  content: "";
 }
-.color-swatch[aria-pressed="true"] {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
+.menu-color[aria-checked="true"] {
+  box-shadow: inset 0 0 0 2px #161b26;
 }
-.current-colour {
-  width: 20px;
-  height: 20px;
-  border: 1px solid var(--border-strong);
-  border-radius: 50%;
-  background: var(--swatch);
+.menu-color[aria-checked="true"] span::after {
+  content: "✓";
+  display: grid;
+  height: 100%;
+  place-items: center;
+  color: #161b26;
+  font-weight: 700;
+}
+.sticky-menu-close {
+  display: none;
 }
 .swatch-yellow {
   --swatch: #ffe68c;
@@ -316,20 +299,25 @@ kbd {
 .swatch-purple {
   --swatch: #dacfff;
 }
-.sticky-drag {
+.sticky-kebab {
   position: absolute;
   z-index: 2;
-  top: 0.2rem;
-  right: 0.2rem;
-  padding: 0.15rem 0.35rem;
+  top: 0;
+  right: 0;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
   border: 0;
+  border-radius: 4px;
   background: transparent;
-  cursor: grab;
-  opacity: 0;
+  color: #161b26;
+  font-size: 24px;
 }
-.sticky-frame[aria-selected="true"] .sticky-drag,
-.sticky-frame:focus-within .sticky-drag {
-  opacity: 1;
+.sticky-frame[aria-current="true"] {
+  outline: 2px solid var(--brand-action);
+  outline-offset: 2px;
 }
 .zoom-controls {
   position: fixed;
@@ -403,25 +391,60 @@ kbd {
 }
 #invite-panel {
   position: fixed;
-  z-index: 8;
-  top: 118px;
-  right: 1rem;
+  z-index: 12;
+  top: 0;
+  right: 0;
+  left: auto;
+  bottom: 0;
   margin: 0;
-  display: grid;
-  gap: 12px;
-  width: 520px;
-  height: 492px;
+  width: var(--invitation-width, 33.333333vw);
+  height: 100dvh;
   max-width: none;
-  max-height: calc(100vh - 134px);
-  overflow: auto;
+  max-height: none;
+  overflow: hidden;
   padding: 24px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
+  border: 0;
+  border-left: 1px solid var(--border);
   background: var(--surface);
-  box-shadow: 0 10px 24px #161b261f;
+}
+@media (min-width: 600px) and (min-height: 501px), (min-width: 901px) {
+  .has-invitation-drawer .canvas {
+    right: var(--invitation-width);
+  }
+  .has-invitation-drawer .zoom-controls {
+    right: calc(var(--invitation-width) + 16px);
+  }
+  .has-invitation-drawer > .invite-toggle {
+    right: calc(var(--invitation-width) + 138px);
+  }
+  .has-invitation-drawer > button[data-testid="logout"] {
+    right: calc(var(--invitation-width) + 16px);
+  }
 }
 .invitation-composer-form {
-  display: contents;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+  max-width: none;
+}
+.composer-scroll {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+}
+.composer-footer {
+  display: grid;
+  flex: none;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 12px;
+}
+.composer-footer p {
+  margin: 0;
 }
 .composer-header {
   display: flex;
@@ -432,7 +455,12 @@ kbd {
   margin: 0;
 }
 .composer-back {
-  display: none;
+  display: grid;
+  place-items: center;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  padding: 0;
 }
 .mobile-sticky-editor {
   display: none;
@@ -479,7 +507,7 @@ kbd {
 }
 .composer-controls {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 128px 72px;
+  grid-template-columns: minmax(0, 1fr) 128px;
   align-items: end;
   gap: 8px;
 }
@@ -497,7 +525,8 @@ kbd {
   padding: 0 10px;
 }
 #invite-panel .composer-add {
-  width: 72px;
+  grid-column: 1 / -1;
+  width: 100%;
   padding: 0;
 }
 .composer-count {
@@ -505,8 +534,13 @@ kbd {
 }
 .composer-recipients {
   display: grid;
+  align-content: start;
+  grid-auto-rows: max-content;
+  flex: 1 1 auto;
+  min-height: 0;
   gap: 8px;
   overflow: auto;
+  overscroll-behavior: contain;
 }
 .composer-recipient {
   display: grid;
@@ -516,9 +550,15 @@ kbd {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: #f7f9fc;
-  min-height: 72px;
+  min-height: max-content;
+  align-content: start;
+}
+.composer-recipient > span {
+  grid-column: 1 / -1;
+  overflow-wrap: anywhere;
 }
 .composer-recipient strong {
+  grid-column: 1 / -1;
   font-size: 11px;
   font-weight: 400;
 }
@@ -531,7 +571,7 @@ kbd {
   overflow-wrap: anywhere;
 }
 .composer-recipient button {
-  grid-row: 2 / 4;
+  grid-row: 3;
   grid-column: 2;
   align-self: center;
   padding: 0 12px;
@@ -642,6 +682,7 @@ button {
   font-weight: 700;
 }
 button:focus-visible,
+select:focus-visible,
 input:focus-visible,
 textarea:focus-visible {
   outline: 2px solid var(--focus-ring);
@@ -780,14 +821,18 @@ textarea:focus-visible {
   color: #161b26;
   font-weight: 600;
 }
-@media (max-width: 599px) {
-  .color-picker .color-palette {
-    display: grid;
-    grid-template-columns: repeat(3, 48px);
-    width: 176px;
+@media (max-width: 599px), (max-width: 900px) and (max-height: 500px) {
+  .sticky-menu {
+    top: auto !important;
+    right: var(--visual-viewport-left, 0px);
+    bottom: 0;
+    left: var(--visual-viewport-left, 0px) !important;
+    width: var(--visual-viewport-width, 100vw);
+    max-width: none;
+    border-radius: 16px 16px 0 0;
   }
-  .color-picker .color-palette legend {
-    grid-column: 1 / -1;
+  .sticky-menu-close {
+    display: block;
   }
   .board-shell.has-own-screen
     > :not(#invite-panel):not(.mobile-sticky-editor):not(.sr-only) {
@@ -933,6 +978,15 @@ textarea:focus-visible {
     gap: 6px 12px;
   }
 }
+.is-short-viewport .composer-footer {
+  min-height: 44px;
+  gap: 0;
+}
+.is-short-viewport .composer-footer .composer-transport-hint,
+.is-short-viewport .composer-footer .composer-enter-hint,
+.is-short-viewport .composer-footer .composer-management-access {
+  display: none;
+}
 .team-access-panel {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -997,6 +1051,12 @@ textarea:focus-visible {
   .row-actions {
     grid-column: 1;
   }
+}
+@media (max-width: 599px), (max-width: 900px) and (max-height: 500px) {
+  #invite-panel input,
+  #invite-panel select {
+    font-size: 16px;
+  }
   #invite-panel {
     z-index: 30;
     top: var(--visual-viewport-top, 0px);
@@ -1011,11 +1071,33 @@ textarea:focus-visible {
     border: 0;
     border-radius: 0;
     overflow-x: hidden;
-    overflow-y: auto;
+    overflow-y: hidden;
     display: block;
   }
-  .invitation-composer-form > * + * {
-    margin-top: 12px;
+  .invitation-composer-form {
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+  .is-short-viewport .composer-scroll {
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .is-short-viewport .composer-recipients {
+    flex: none;
+    overflow: visible;
+  }
+  .composer-footer {
+    grid-template-columns: 1fr;
+  }
+  .composer-footer .composer-send {
+    grid-row: 1;
+    justify-self: stretch;
+    width: 100%;
+  }
+  .composer-footer .composer-transport-hint,
+  .composer-footer .composer-enter-hint {
+    font-size: 11px;
+    line-height: 14px;
   }
   .composer-back {
     display: grid;
@@ -1029,13 +1111,7 @@ textarea:focus-visible {
   .composer-controls {
     grid-template-columns: minmax(0, 1fr) 112px;
   }
-  .composer-recipients {
-    min-height: min-content;
-    overflow: visible;
-  }
-  .composer-recipient {
-    min-height: 112px;
-  }
+
   #invite-panel .composer-add {
     grid-column: 1 / -1;
     width: 100%;
